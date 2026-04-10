@@ -37,6 +37,7 @@ struct Args {
     #[arg(long)]
     test_slashing_delay: bool,
 
+    /// The remote anchor address for the Hydra Handshake.
     #[arg(short, long)]
     connect: Option<String>,
 }
