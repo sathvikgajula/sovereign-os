@@ -14,6 +14,9 @@ jobs:
   build-windows:
     name: Windows x64 MSVC (The Ghost)
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pq-core
     steps:
       - uses: actions/checkout@v4
       
@@ -44,6 +47,9 @@ jobs:
   build-macos:
     name: macOS Universal (Sanctuary)
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: pq-core
     steps:
       - uses: actions/checkout@v4
       
