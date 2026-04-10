@@ -1,0 +1,37 @@
+[package]
+name = "pq-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "pq_daemon"
+path = "src/lib.rs"
+
+[dependencies]
+pqc = { package = "pq-crypto", version = "0.1.0", path = "../pq-crypto" }
+pq-identity = { version = "0.1.0", path = "../pq-identity" }
+pq-transport = { version = "0.1.0", path = "../pq-transport" }
+pq-reputation = { version = "0.1.0", path = "../pq-reputation" }
+pq-storage = { version = "0.1.0", path = "../pq-storage" }
+pq-stream = { version = "0.1.0", path = "../pq-stream" }
+pq-onion = { version = "0.1.0", path = "../pq-onion" }
+anyhow.workspace = true
+rand = "0.8"
+tokio.workspace = true
+serde.workspace = true
+# Tor Integration
+arti-client = { workspace = true }
+tor-rtcompat = { workspace = true }
+tor-socksproto = { workspace = true }
+serde_json.workspace = true
+hex.workspace = true
+blake3.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+nostr-sdk = { version = "0.44", features = ["nip44", "nip59", "tor"] }
+nostr = { version = "0.44", features = ["nip44", "nip59"] }
+quinn.workspace = true
+chacha20poly1305.workspace = true
+tokio-stream = "0.1.18"
+clap = { version = "4.6.0", features = ["derive"] }
+rustls = { version = "0.23", features = ["ring"] }

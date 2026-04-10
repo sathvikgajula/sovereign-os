@@ -1,0 +1,10 @@
+[package]
+name = "pq-dht"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pq-reputation = { path = "../pq-reputation" }
+anyhow.workspace = true
+blake3.workspace = true
+tokio.workspace = true

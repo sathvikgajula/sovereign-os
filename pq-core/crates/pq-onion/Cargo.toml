@@ -1,0 +1,13 @@
+[package]
+name = "pq-onion"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pq-crypto = { path = "../pq-crypto" }
+pq-reputation = { path = "../pq-reputation" }
+pq-identity = { path = "../pq-identity" }
+rand = "0.8"
+pqcrypto-traits = "0.3"
+serde = { workspace = true }
+anyhow = { workspace = true }

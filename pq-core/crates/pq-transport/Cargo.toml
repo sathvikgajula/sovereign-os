@@ -1,0 +1,19 @@
+[package]
+name = "pq-transport"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pq-crypto = { path = "../pq-crypto" }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+stunclient = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+socket2 = { version = "0.5", features = ["all"] }

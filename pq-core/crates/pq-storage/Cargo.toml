@@ -1,0 +1,16 @@
+[package]
+name = "pq-storage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+moka.workspace = true
+chacha20poly1305.workspace = true
+hex.workspace = true
+tracing.workspace = true
+pq-crypto = { version = "0.1.0", path = "../pq-crypto" }
+pq-identity = { version = "0.1.0", path = "../pq-identity" }
+pq-reputation = { version = "0.1.0", path = "../pq-reputation" }
+tokio.workspace = true

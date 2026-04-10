@@ -1,0 +1,33 @@
+[package]
+name = "pq-dashboard"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "pq_dashboard_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { workspace = true }
+anyhow = { workspace = true }
+hex = { workspace = true }
+
+# pq-core internal dependencies
+pqc = { package = "pq-crypto", path = "../../pq-crypto" }
+pq-identity = { path = "../../pq-identity" }
+pq-reputation = { path = "../../pq-reputation" }
+pq-storage = { path = "../../pq-storage" }
+pq-transport = { path = "../../pq-transport" }
+pq-stream = { path = "../../pq-stream" }
+pq-onion = { path = "../../pq-onion" }
+pq-dht = { path = "../../pq-dht" }
+pq-daemon = { path = "../../pq-daemon" }

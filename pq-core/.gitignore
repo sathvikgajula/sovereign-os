@@ -1,0 +1,10 @@
+target/
+**/*.rs.bk
+*.db
+*.json
+!crates/pq-daemon/manifest.json
+.DS_Store
+*.log
+scratch/
+all_keys.txt
+ROOT_PK_BYTES

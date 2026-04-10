@@ -1,0 +1,9 @@
+[package]
+name = "pq-stream"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+chacha20poly1305.workspace = true

@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pq-crypto",
+    "crates/pq-identity",
+    "crates/pq-transport",
+    "crates/pq-daemon", "crates/pq-reputation", "crates/pq-storage", "crates/pq-stream", "crates/pq-dht", "crates/pq-onion",
+    "crates/pq-dashboard/src-tauri",
+]
+
+[workspace.dependencies]
+anyhow = "1.0"
+tokio = { version = "1.37", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+blake3 = "1.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Post-quantum crypto primitives
+pqcrypto-kyber = "0.8"
+pqcrypto-dilithium = "0.5"
+pqcrypto-traits = "0.3"
+
+# QUIC + PQ-TLS
+quinn = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs", "runtime-tokio", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "prefer-post-quantum", "logging", "std", "tls12"] }
+rcgen = "0.13"
+
+# Nostr signaling
+nostr-sdk = { version = "0.44", features = ["nip44"] }
+
+# STUN
+stunclient = "0.4"
+chacha20poly1305 = "0.10"
+moka = { version = "0.12", features = ["future"] }
+
+# Tor (Arti)
+arti-client = { version = "0.28", features = ["full", "tokio", "native-tls"] }
+tor-rtcompat = { version = "0.28", features = ["tokio", "native-tls"] }
+tor-socksproto = "0.28"
+dashmap = "6.0"
