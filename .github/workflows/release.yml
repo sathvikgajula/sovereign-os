@@ -41,8 +41,8 @@ jobs:
         with:
           name: sovereign_os_windows_v1.0
           path: |
-            sovereign_os_v1.0.exe
-            CHECKSUM_WINDOWS.txt
+            pq-core/sovereign_os_v1.0.exe
+            pq-core/CHECKSUM_WINDOWS.txt
 
   build-macos:
     name: macOS Universal (Sanctuary)
@@ -79,5 +79,5 @@ jobs:
         with:
           name: sovereign_os_macos_v1.0
           path: |
-            sovereign_os_v1.0
-            CHECKSUM_MACOS.txt
+            pq-core/sovereign_os_v1.0
+            pq-core/CHECKSUM_MACOS.txt
