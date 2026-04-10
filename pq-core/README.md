@@ -20,8 +20,18 @@ The Sovereign OS core is distributed as a single **9.9MB fat binary**. This univ
 
 ---
 
+## 🛰️ Windows & Cloud Build
+For users on Windows or those without a local Rust environment, Sovereign OS provides verified binaries generated via **GitHub Actions**.
+
+1. Navigate to the **Actions** tab of this repository.
+2. Select the latest successful **Sovereign OS v1.0 — Sanctuary Release** workflow.
+3. Download the `sovereign_os_windows_v1.0` artifact.
+4. Verify the SHA-256 hash using the provided `CHECKSUM_WINDOWS.txt`.
+
+---
+
 ## 🤓 Technical Spec (For the Nerds)
-- **Binary Hash**: `e70a96ce9f45a921b658f8cc0d5ad962d53025e1bcb35aa09fcfafb11cd7e5f6`
+- **Binary Hash (Mac)**: `e70a96ce9f45a921b658f8cc0d5ad962d53025e1bcb35aa09fcfafb11cd7e5f6`
 - **Network Protocol**: PQ-QUIC with X25519MLKEM768 Hybrid Key Exchange.
 - **Deterministic Routing**: 3-Hop **Sphinx Onion** circuits with **Hydra Relay** fallback (<300ms recovery).
 - **Stealth**: $500\text{ms} \pm 50\text{ms}$ Burst Jitter ($T_{max}$ Audit enforced).
@@ -30,10 +40,14 @@ The Sovereign OS core is distributed as a single **9.9MB fat binary**. This univ
 ---
 
 ## ⚡ Quick Start
-Run the universal binary on your Mac in one command:
+Run the universal binary on your Mac or Windows box in one command:
 
 ```bash
+# Mac (Apple/Intel)
 ./sovereign_os_v1.0 --identity v1_root --port 4433
+
+# Windows (Command Prompt)
+sovereign_os_v1.0.exe --identity v1_root --port 4433
 ```
 
 *Welcome to the Sanctuary. You are now invisible.*

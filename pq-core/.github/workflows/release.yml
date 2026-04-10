@@ -1,0 +1,77 @@
+name: Sovereign OS v1.0 — Sanctuary Release
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Windows x64 MSVC (The Ghost)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        
+      - name: Build Binary
+        run: cargo build --package pq-daemon --release --target x86_64-pc-windows-msvc
+        
+      - name: Finalize Artifact
+        run: |
+          move target/x86_64-pc-windows-msvc/release/pq-daemon.exe sovereign_os_v1.0.exe
+          certutil -hashfile sovereign_os_v1.0.exe SHA256 > CHECKSUM_WINDOWS.txt
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign_os_windows_v1.0
+          path: |
+            sovereign_os_v1.0.exe
+            CHECKSUM_WINDOWS.txt
+
+  build-macos:
+    name: macOS Universal (Sanctuary)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+          
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        
+      - name: Build x86_64
+        run: cargo build --package pq-daemon --target x86_64-apple-darwin --release
+        
+      - name: Build aarch64
+        run: cargo build --package pq-daemon --target aarch64-apple-darwin --release
+        
+      - name: Create Universal Binary
+        run: |
+          lipo -create -output sovereign_os_v1.0 \
+            target/x86_64-apple-darwin/release/pq-daemon \
+            target/aarch64-apple-darwin/release/pq-daemon
+          shasum -a 256 sovereign_os_v1.0 > CHECKSUM_MACOS.txt
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sovereign_os_macos_v1.0
+          path: |
+            sovereign_os_v1.0
+            CHECKSUM_MACOS.txt
