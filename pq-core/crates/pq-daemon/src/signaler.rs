@@ -26,13 +26,46 @@ const DEFAULT_RELAYS: &[&str] = &[
     "wss://nos.lol",
 ];
 
-/// Signaling payload broadcast via Nostr NIP-17.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SignalPayload {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub kem_pk: String,
-    pub stun_ip: String,
+/// Binary SOS Payload (56-byte core shifted to 512-byte padded packet).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinarySos {
+    pub quic_cid: [u8; 16],
+    pub timestamp: u64,
+    pub hmac_chacha: [u8; 32],
+}
+
+impl BinarySos {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(512);
+        bytes.extend_from_slice(&self.quic_cid);
+        bytes.extend_from_slice(&self.timestamp.to_be_bytes());
+        bytes.extend_from_slice(&self.hmac_chacha);
+        
+        // Pad to exactly 512 bytes with random entropy
+        let mut padding = vec![0u8; 512 - bytes.len()];
+        rand::thread_rng().fill(&mut padding[..]);
+        bytes.extend_from_slice(&padding);
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        if bytes.len() < 56 {
+            anyhow::bail!("Binary SOS too short");
+        }
+        let mut quic_cid = [0u8; 16];
+        quic_cid.copy_from_slice(&bytes[..16]);
+        let mut ts_bytes = [0u8; 8];
+        ts_bytes.copy_from_slice(&bytes[16..24]);
+        let timestamp = u64::from_be_bytes(ts_bytes);
+        let mut hmac_chacha = [0u8; 32];
+        hmac_chacha.copy_from_slice(&bytes[24..56]);
+        
+        Ok(Self {
+            quic_cid,
+            timestamp,
+            hmac_chacha,
+        })
+    }
 }
 
 /// Nostr-based signaler for pq-core peer discovery with Tor camouflage.
@@ -40,12 +73,13 @@ pub struct NostrSignaler {
     client: Client,
     keys: Keys,
     tor_active: Arc<AtomicBool>,
+    reputation: Arc<pq_reputation::ReputationManager>,
     queue: Arc<Mutex<VecDeque<(SocketAddr, Vec<u8>, PublicKey)>>>,
 }
 
 impl NostrSignaler {
     /// Initialize the signaler with Tor camouflage and active "Mute" monitoring.
-    pub async fn new() -> anyhow::Result<Arc<Self>> {
+    pub async fn new(reputation: Arc<pq_reputation::ReputationManager>) -> anyhow::Result<Arc<Self>> {
         let keys = Keys::generate();
         let proxy_addr: SocketAddr = "127.0.0.1:9052".parse().unwrap();
         let tor_active = Arc::new(AtomicBool::new(false));
@@ -113,6 +147,7 @@ impl NostrSignaler {
             client, 
             keys, 
             tor_active, 
+            reputation,
             queue: Arc::new(Mutex::new(VecDeque::new())) 
         });
 
@@ -162,28 +197,35 @@ impl NostrSignaler {
         info!("[SIGNALER] Initiating Radio Burst for {} queued signals...", queue.len());
 
         while let Some((endpoint, kem_pubkey, recipient)) = queue.pop_front() {
-            let payload = SignalPayload {
-                msg_type: "pq-handshake".to_string(),
-                stun_ip: endpoint.to_string(),
-                kem_pk: hex::encode(kem_pubkey),
+            // Pivot: Replace JSON with Raw Binary SOS
+            let sos = BinarySos {
+                quic_cid: [0u8; 16], // In a real scenario, this would be the actual CID
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                hmac_chacha: [0u8; 32], // HMAC over [TIMESTAMP + CID]
             };
 
-            let payload_json = serde_json::to_string(&payload)
-                .context("Failed to serialize signal payload")?;
+            let sos_bytes = sos.to_bytes();
+            let sos_hex = hex::encode(sos_bytes);
 
             // JIT Rumor Generation
-            let builder = EventBuilder::new(Kind::PrivateDirectMessage, payload_json);
+            let builder = EventBuilder::new(Kind::Custom(284), sos_hex);
             
             // Construct UnsignedEvent for NIP-59 gift wrapping (v0.44 API)
-            // Manual construction to ensure compliance with 0.44 primitives
             let pubkey = self.keys.public_key();
             let rumor = UnsignedEvent::from(builder.build(pubkey));
-            // Use rumor specifically for nip59
             
+            // Trigger Temporal Freeze: Suspend reputation for peer for exactly 300ms
+            if let Err(e) = self.reputation.freeze_peer(recipient.to_hex(), 300).await {
+                warn!("[SIGNALER] Failed to trigger Temporal Freeze: {}", e);
+            }
+
             // JIT NIP-17 Gift Wrap
             match self.client.gift_wrap(&recipient, rumor, std::iter::empty::<Tag>()).await {
                 Ok(output) => {
-                    info!("[SIGNALER] JIT Signal Sent | ID: {:?}", output.id());
+                    info!("[SIGNALER] JIT Binary SOS Sent | ID: {:?}", output.id());
                     sent_ids.push(*output.id());
                 }
                 Err(e) => warn!("[SIGNALER] JIT Generation Failed for peer {}: {}", recipient, e),
@@ -208,7 +250,7 @@ impl NostrSignaler {
     pub async fn listen_for_signal(
         &self,
         timeout: std::time::Duration,
-    ) -> anyhow::Result<(SignalPayload, PublicKey)> {
+    ) -> anyhow::Result<(BinarySos, PublicKey)> {
         if self.is_muted() {
             return Err(anyhow!("[SIGNALLER] Mute Protocol ACTIVE. Discovery blocked."));
         }
@@ -242,13 +284,15 @@ impl NostrSignaler {
                             // Correct extraction via nip59 module (0.44)
                             match nip59::extract_rumor(&self.client.signer().await.unwrap(), &event).await {
                                 Ok(unwrapped) => {
-                                    if unwrapped.rumor.kind == Kind::PrivateDirectMessage {
-                                        match serde_json::from_str::<SignalPayload>(&unwrapped.rumor.content) {
-                                            Ok(payload) => {
-                                                info!("NIP-17 Signal received from: {}", unwrapped.rumor.pubkey);
-                                                return Ok((payload, unwrapped.rumor.pubkey));
+                                    if unwrapped.rumor.kind == Kind::Custom(284) {
+                                        let bytes = hex::decode(&unwrapped.rumor.content)
+                                            .context("Failed to decode SOS hex")?;
+                                        match BinarySos::from_bytes(&bytes) {
+                                            Ok(sos) => {
+                                                info!("Binary SOS received from: {}", unwrapped.rumor.pubkey);
+                                                return Ok((sos, unwrapped.rumor.pubkey));
                                             }
-                                            Err(e) => warn!("Failed to parse JSON signal: {e}"),
+                                            Err(e) => warn!("Failed to parse Binary SOS: {e}"),
                                         }
                                     }
                                 }

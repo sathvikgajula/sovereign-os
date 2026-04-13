@@ -1,5 +1,6 @@
 use pq_reputation::{ReputationManager, ReputationScore};
 use pq_storage::{EphemeralStore};
+use pq_daemon::signaler::NostrSignaler;
 use std::sync::Arc;
 use tauri::State;
 use serde::Serialize;
@@ -13,6 +14,7 @@ pub struct MeshStats {
 pub struct AppState {
     pub reputation: Arc<ReputationManager>,
     pub storage: Arc<EphemeralStore>,
+    pub signaler: Arc<NostrSignaler>,
 }
 
 #[tauri::command]
@@ -57,6 +59,10 @@ async fn trigger_chaos_simulation(
         Ok("Chaos simulation triggered".to_string())
     }
 }
+#[tauri::command]
+async fn get_mute_status(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.signaler.is_muted())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -65,9 +71,10 @@ pub fn run() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (reputation, storage, signaler) = rt.block_on(async {
         let reputation = ReputationManager::new("/Users/max/.gemini/antigravity/reputation.json".into()).await.unwrap();
-        let storage = EphemeralStore::new(reputation.clone());
-        let signaler = NostrSignaler::new().await.unwrap();
-        (Arc::new(reputation), Arc::new(storage), Arc::new(signaler))
+        let reputation = Arc::new(reputation);
+        let storage = EphemeralStore::new((*reputation).clone());
+        let signaler = NostrSignaler::new(reputation.clone()).await.unwrap();
+        (reputation, Arc::new(storage), signaler)
     });
 
     tauri::Builder::default()

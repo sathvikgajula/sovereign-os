@@ -14,6 +14,8 @@ pub struct ReputationScore {
     pub last_interaction: u64,
     pub mu_ping: f64,    // Moving average ping in ms
     pub sigma_jitter: f64, // Moving average jitter in ms
+    pub success_streak: u32,
+    pub frozen_until: u64, // Unix timestamp in ms
 }
 
 impl ReputationScore {
@@ -28,6 +30,14 @@ impl ReputationScore {
     /// Calculates the maximum allowed timeout for an institutional-grade canary audit.
     pub fn get_t_max(&self) -> f64 {
         self.mu_ping + (3.0 * self.sigma_jitter) + 50.0
+    }
+
+    pub fn is_frozen(&self) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.frozen_until > now
     }
 }
 
@@ -80,6 +90,8 @@ impl ReputationManager {
             last_interaction: current_time,
             mu_ping: 100.0, // Default 100ms
             sigma_jitter: 10.0, // Default 10ms
+            success_streak: 0,
+            frozen_until: 0,
         });
         
         let mut score = entry.value().clone();
@@ -99,22 +111,33 @@ impl ReputationManager {
                 last_interaction: current_time,
                 mu_ping: latency_ms,
                 sigma_jitter: 5.0,
+                success_streak: 0,
+                frozen_until: 0,
             });
             
             let score = entry.value_mut();
+            if score.is_frozen() {
+                return Ok(());
+            }
             Self::apply_decay(score, current_time);
             
             if success {
-                // Success: Incremental trust gain (0.1)
-                score.alpha += 0.1;
+                // Success: Asymmetric Alpha Streak
+                // alpha_new = alpha_old + min(n * 0.5, 2.5)
+                score.success_streak += 1;
+                let gain = (score.success_streak as f64 * 0.5).min(2.5);
+                score.alpha += gain;
+                
                 // Update moving average (alpha=0.2 smoothing)
                 score.mu_ping = (score.mu_ping * 0.8) + (latency_ms * 0.2);
                 let diff = (latency_ms - score.mu_ping).abs();
                 score.sigma_jitter = (score.sigma_jitter * 0.8) + (diff * 0.2);
             } else {
-                // Failure: Heavy slashing (beta + 2.0)
+                // Failure: Bounded Beta Penalty
+                // Cap beta penalties for "Late-but-Valid" packets at +2.0 per event.
                 score.beta += 2.0;
-                info!("[REPUTATION] Peer {} slashed due to latency/drop (Canary Failed).", peer_did);
+                score.success_streak = 0;
+                info!("[REPUTATION] Peer {} slashed (beta +2.0) due to latency/drop.", peer_did);
             }
             score.last_interaction = current_time;
         }
@@ -134,6 +157,8 @@ impl ReputationManager {
                 last_interaction: current_time,
                 mu_ping: 100.0,
                 sigma_jitter: 10.0,
+                success_streak: 0,
+                frozen_until: 0,
             });
             
             let score = entry.value_mut();
@@ -174,5 +199,52 @@ impl ReputationManager {
         }
         
         Ok(results)
+    }
+
+    /// Suspend all reputation recalculations for a peer for a specified duration.
+    pub async fn freeze_peer(&self, peer_did: String, duration_ms: u64) -> Result<()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        
+        let mut entry = self.scores.entry(peer_did.clone()).or_insert(ReputationScore {
+            peer_did: peer_did.clone(),
+            alpha: 1.0,
+            beta: 1.0,
+            last_interaction: now / 1000,
+            mu_ping: 100.0,
+            sigma_jitter: 10.0,
+            success_streak: 0,
+            frozen_until: 0,
+        });
+
+        entry.value_mut().frozen_until = now + duration_ms;
+        info!("[REPUTATION] Peer {} FROZEN for {}ms.", peer_did, duration_ms);
+        Ok(())
+    }
+
+    /// High-gravity slashing for cryptographic failures (Invalid MAC or Signature).
+    pub async fn apply_auth_failure(&self, peer_did: String) -> Result<()> {
+        let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        {
+            let mut entry = self.scores.entry(peer_did.clone()).or_insert(ReputationScore {
+                peer_did,
+                alpha: 1.0,
+                beta: 1.0,
+                last_interaction: current_time,
+                mu_ping: 100.0,
+                sigma_jitter: 10.0,
+                success_streak: 0,
+                frozen_until: 0,
+            });
+
+            let score = entry.value_mut();
+            score.beta += 10.0;
+            score.success_streak = 0;
+            info!("[REPUTATION] Peer {} isolated due to AUTHENTICATION_FAILURE (beta +10.0).", entry.key());
+        }
+        self.save().await?;
+        Ok(())
     }
 }

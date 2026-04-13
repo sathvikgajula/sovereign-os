@@ -15,6 +15,13 @@ pub use config::PqQuicConfig;
 pub use nat::NatPuncher;
 pub use stun::discover_public_addr_async;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkState {
+    Active,
+    Muted,
+}
+
+
 use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 

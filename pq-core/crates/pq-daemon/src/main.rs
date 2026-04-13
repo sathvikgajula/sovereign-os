@@ -13,7 +13,10 @@ use pq_transport::{NatPuncher, PqQuicConfig, connect_with_hydra_fallback};
 
 use pq_daemon::orchestra::SovereignOrchestra;
 use pq_daemon::config;
+use pq_daemon::crucible::CrucibleEngine;
+use pq_transport::NetworkState;
 use std::sync::Arc;
+use tokio::sync::{watch, mpsc};
 use tracing::{info, warn, error};
 
 #[derive(Parser, Debug)]
@@ -88,9 +91,57 @@ async fn main() -> Result<()> {
     info!("[MANIFEST] Verification SUCCESS: TRUST_ABSOLUTE");
     info!("[MANIFEST] Trust Mesh Anchors: FAU Research Lab, Galaxy Digital");
 
-    // Initialize & Spawn the Signaler (JIT Pulsing)
-    let _signaler = Arc::new(pq_daemon::signaler::NostrSignaler::new().await?);
-    info!("[SIGNALER] Submarine Signaler initialized.");
+    // ── V1.0 Crucible & Network State Initialization ────────────────
+    let (status_tx, mut status_rx) = watch::channel(NetworkState::Active);
+    let (crucible_tx, crucible_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (output_tx, mut output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+    let mut crucible = CrucibleEngine::new(output_tx);
+    
+    // Spawn Crucible Engine loop
+    tokio::spawn(async move {
+        crucible.run(crucible_rx).await;
+    });
+
+    // Initialize & Spawn the Signaler (JIT Pulsing via Binary SOS)
+    let signaler = pq_daemon::signaler::NostrSignaler::new(reputation.clone()).await?;
+    info!("[SIGNALER] Submarine Signaler initialized with Binary SOS.");
+
+    // ── Crucible Messaging Loop (Mute-First Priority) ────────────────
+    tokio::spawn(async move {
+        info!("[DAEMON] Messaging Loop ACTIVE.");
+        loop {
+            tokio::select! {
+                // Priority Branch 1: Monitor Network State
+                _ = status_rx.changed() => {
+                    let state = *status_rx.borrow();
+                    if state == NetworkState::Muted {
+                        warn!("[DAEMON] Network state: MUTED. Aborting all pending transmissions.");
+                        // In a real implementation, we'd signal the crucible to clear
+                        // but here we just observe the drop.
+                    }
+                }
+                // Branch 2: Handle transmissions from Crucible
+                Some(_packet) = output_rx.recv() => {
+                    if *status_rx.borrow() == NetworkState::Active {
+                        // In a real scenario, send over QUIC/UDP
+                        // info!("[DAEMON] Transmitting 512-byte fragment...");
+                    } else {
+                        // Drop fragment from memory buffer (Mute-First)
+                        // info!("[DAEMON] DROPPED fragment due to MUTED state.");
+                    }
+                }
+            }
+        }
+    });
+
+    // Simulate "Mute" Protocol for testing if needed
+    let status_tx_clone = status_tx.clone();
+    tokio::spawn(async move {
+        // Example: Drop network after 10 seconds for demo
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        // status_tx_clone.send(NetworkState::Muted).unwrap();
+    });
 
     if let Some(target_addr) = args.connect {
         initiate_handshake(&target_addr).await?;
