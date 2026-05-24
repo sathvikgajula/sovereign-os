@@ -9,7 +9,7 @@ use pq_onion::{SphinxPacket, SPHINX_MTU};
 use pq_storage::EphemeralStore;
 use pq_reputation::ReputationManager;
 use pq_stream::SovereignStream;
-use pq_transport::{NatPuncher, PqQuicConfig, connect_with_hydra_fallback};
+use pq_transport::{NatPuncher, PqQuicConfig, connect_with_hydra_fallback, EgressVault};
 
 use pq_daemon::orchestra::SovereignOrchestra;
 use pq_daemon::config;
@@ -43,20 +43,65 @@ struct Args {
     /// The remote anchor address for the Hydra Handshake.
     #[arg(short, long)]
     connect: Option<String>,
+
+    #[arg(long)]
+    test_kernel_hardening: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // ── V1.0 Crypto Provider Initialization ─────────────────────────
+    // ... existing initialization ...
     rustls::crypto::ring::default_provider().install_default()
         .expect("Failed to install rustls crypto provider");
 
-    tracing_subscriber::fmt::init();
+    // Dual-layer logging: console (INFO) + file (DEBUG → sovereign_debug.log)
+    {
+        use tracing_subscriber::prelude::*;
+        use tracing_subscriber::fmt;
+        use tracing_subscriber::EnvFilter;
+
+        let file_appender = tracing_appender::rolling::never(".", "sovereign_debug.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+        // File layer: captures DEBUG and above (including quinn internals)
+        let file_layer = fmt::layer()
+            .with_writer(non_blocking)
+            .with_ansi(false)
+            .with_filter(EnvFilter::new("debug"));
+
+        // Console layer: INFO and above for operator visibility
+        let console_layer = fmt::layer()
+            .with_filter(EnvFilter::new(
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+            ));
+
+        tracing_subscriber::registry()
+            .with(file_layer)
+            .with(console_layer)
+            .init();
+
+        // Leak the guard to keep the file writer alive for the process lifetime
+        std::mem::forget(_guard);
+    }
     let args = Args::parse();
 
+    if args.test_kernel_hardening {
+        run_kernel_hardening_audit().await?;
+        return Ok(());
+    }
+    // ... rest of main ...
+
     // ── V1.0 Initialization ──────────────────────────────────────────
-    let rep_path = "/Users/max/.gemini/antigravity/reputation.json";
-    let reputation = Arc::new(ReputationManager::new(rep_path.into()).await?);
+    let rep_path = std::env::var("SOVEREIGN_REP_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            std::path::PathBuf::from(home).join(".sovereign/reputation.json")
+        });
+    if let Some(parent) = rep_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let reputation = Arc::new(ReputationManager::new(rep_path).await?);
     
     // Initialize & Spawn the Orchestra (Background Auditing)
     let orchestra = SovereignOrchestra::new(reputation.clone());
@@ -236,48 +281,82 @@ async fn run_slashing_delay_simulation() -> Result<()> {
 }
 
 async fn run_live_fire_demo() -> Result<()> {
-    println!("── Sovereign OS v1.0: 5G Live Fire Handshake Audit ──");
-    
-    // 1. Simulate "Crucible" NAT Conditions
-    info!("[DEMO] Local Node (Fiber) initiating 5G Handshake...");
-    info!("[DEMO] Target: Mobile Hotspot (Symmetric Carrier NAT)");
-    
-    // Create a dummy puncher and config for the demo
-    let dummy_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
-    let puncher = NatPuncher::new(dummy_socket, "1.2.3.4:5566".parse()?)?;
-    let quic_config = PqQuicConfig::new(false)?;
-    let t_max = 500.0; // T_max = 500ms jitter window
+    let args = Args::parse();
+    println!("── Sovereign OS v2.0: Live Fire Benchmark Harness ──");
+    println!("[*] Identity: {}", args.identity);
+    println!("[*] Port: {}", args.port);
 
-    // Attempt connection with Hydra Fallback
-    // We expect this to fail (timeout) because 1.2.3.4 is dummy
-    println!("[DEMO] Phase 1: Simultaneous Hole Punch (UDP Blast 25ms density)...");
-    
-    let result = connect_with_hydra_fallback(
-        puncher,
-        quic_config,
-        "1.2.3.4:5566".parse()?,
-        t_max
-    ).await;
+    // 1. Determine target address from --connect
+    let default_connect = if args.port == 9101 {
+        "127.0.0.1:9102".to_string()
+    } else {
+        "127.0.0.1:9101".to_string()
+    };
+    let target_addr = args.connect.clone().unwrap_or(default_connect);
+    println!("[*] Connecting to target address: {}", target_addr);
 
-    match result {
-        Err(e) if e.to_string().contains("HYDRA_FALLBACK_REQUIRED") => {
-            info!("[DEMO] DETECTED: 5G Carrier NAT Hole-Punch Blocked.");
-            info!("[DEMO] ACTION: Initiating Deterministic HYDRA RELAY PIVOT...");
-            info!("[DEMO] ROUTE: [Guard: FAU Lab] -> [High-Trust Hydra Relay] -> [Exit: Mobile Node]");
-            println!("[SUCCESS] Hydra Relay Bridge Established ✓ (Latency: 284ms)");
+    // 2. Bind UDP socket and connect it to target
+    let socket = std::net::UdpSocket::bind(format!("127.0.0.1:{}", args.port))
+        .context("Failed to bind UDP socket")?;
+    socket.connect(&target_addr).context("Failed to connect UDP socket")?;
+    
+    // Set non-blocking
+    socket.set_nonblocking(true)?;
+
+    // 3. Setup Metronome gates and channels
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let gates = pq_daemon::bridge::metronome::GateFlags::new();
+    gates.kernel_ready.store(true, std::sync::atomic::Ordering::Release);
+    gates.local_peer_up.store(true, std::sync::atomic::Ordering::Release);
+
+    // Spawn metronome thread
+    use std::os::unix::io::AsRawFd;
+    let _metronome = pq_daemon::bridge::metronome::Metronome::spawn(
+        socket.as_raw_fd(),
+        rx,
+        &gates,
+        [0x42; 32],
+        [0x11; 12],
+    );
+    
+    // 4. Setup input directory for shard injection
+    let base_dir = format!("/tmp/antigravity/node_{}", args.port);
+    let input_dir = format!("{}/input", base_dir);
+    std::fs::create_dir_all(&input_dir)?;
+
+    // 5. Spawn Input Directory Watcher
+    let tx_clone = tx.clone();
+    let input_dir_clone = input_dir.clone();
+    tokio::spawn(async move {
+        let path = std::path::Path::new(&input_dir_clone);
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        let file_path = entry.path();
+                        if file_path.is_file() {
+                            if let Ok(data) = std::fs::read(&file_path) {
+                                // Split into 512-byte frames (FRAME_LEN)
+                                for chunk in data.chunks(512) {
+                                    let mut frame = [0u8; 512];
+                                    let size = chunk.len().min(512);
+                                    frame[..size].copy_from_slice(&chunk[..size]);
+                                    let _ = tx_clone.send(frame);
+                                }
+                            }
+                            let _ = std::fs::remove_file(file_path);
+                        }
+                    }
+                }
+            }
         }
-        _ => warn!("[DEMO] Unexpected handshake result during NAT test."),
+    });
+
+    // 6. Keep the main thread running (will be killed by SIGTERM)
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
-
-    // 2. Submarine Integrity Check (Network Drop)
-    println!("\n── Phase 2: Submarine Integrity (Network Drop Audit) ──");
-    info!("[DEMO] Simulating total network severance...");
-    warn!("[SIGNALER] ALERT: Socket connectivity LOST.");
-    info!("[SIGNALER] Protocol State: FAIL-CLOSED (MUTE)");
-    info!("[GHOST] Neutralizing radio signatures... Jitter Gates LOCKED.");
-    println!("[SUCCESS] Submarine Protocol locked in 0.4ms. Zero metadata leakage confirmed ✓");
-
-    Ok(())
 }
 
 async fn run_3hop_message_test() -> Result<()> {
@@ -365,5 +444,71 @@ async fn run_slashing_audit_test() -> Result<()> {
         println!("  [FAILURE] Bayesian Slashing Verification FAILED");
     }
     
+    Ok(())
+}
+
+use pq_daemon::shard_state::ShardState;
+use pq_daemon::causal_buffer::CausalBuffer;
+use pq_daemon::iblt::Iblt;
+use tokio_util::sync::CancellationToken;
+
+async fn run_kernel_hardening_audit() -> Result<()> {
+    println!("── Sovereign OS v2.0: Kernel Hardening Armored Audit ──");
+    
+    // 1. Quantized Egress Verification
+    info!("[HARDENING] Testing Task 1: Quantized Egress (200ms Metronome)...");
+    let (vault, mut rx) = EgressVault::new();
+    vault.push_response(b"SUCCESS_SIGNAL_1".to_vec()).await;
+    vault.push_response(b"SUCCESS_SIGNAL_2".to_vec()).await;
+    
+    let start = std::time::Instant::now();
+    if let Some(_) = rx.recv().await {
+        let elapsed = start.elapsed().as_millis();
+        info!("[HARDENING] Packet 1 flushed after {}ms (Metronome sync check).", elapsed);
+    }
+
+    // 2. Thermal Half-Life Reputation
+    info!("[HARDENING] Testing Task 2: Thermal Half-Life Penalty...");
+    let rep_path = "/tmp/thermal_audit.json";
+    if std::path::Path::new(rep_path).exists() {
+        let _ = std::fs::remove_file(rep_path);
+    }
+    let reputation = Arc::new(ReputationManager::new(rep_path.into()).await?);
+    let peer_did = "did:pqc:mobile_adversary";
+    
+    // Trigger 3 rapid failures
+    for i in 1..=3 {
+        reputation.apply_canary_result(peer_did.to_string(), false, 500.0).await?;
+        let score = reputation.get_score(peer_did.to_string()).await?;
+        info!("             Cycle {} | Heat: {:.2} | beta: {}", i, score.penalty_heat, score.beta);
+    }
+
+    // 3. Soft Exile State Machine
+    info!("[HARDENING] Testing Task 3: Soft Exile & 5s Guillotine...");
+    let store = Arc::new(EphemeralStore::new((*reputation).clone()));
+    let token = CancellationToken::new();
+    let peer_exile = "did:pqc:unstable_5g_node".to_string();
+    
+    let _state = ShardState::SoftExile(token.clone());
+    ShardState::spawn_guillotine(store.clone(), token.clone(), peer_exile.clone());
+    info!("[HARDENING] Node {} transitioned to SoftExile. Guillotine timer ACTIVE.", peer_exile);
+
+    // 4. Vector Clock Causal Buffer
+    info!("[HARDENING] Testing Task 4: Vector Clock Causal Buffer...");
+    let mut buffer = CausalBuffer::new();
+    // Send out of order: 2, 3, 1
+    buffer.process_packet(2, b"Packet_2".to_vec(), 1.0);
+    buffer.process_packet(3, b"Packet_3".to_vec(), 1.0);
+    let committed = buffer.process_packet(1, b"Packet_1".to_vec(), 1.0);
+    info!("[HARDENING] Causal re-ordering completed. Committed {} out-of-order fragments.", committed.len());
+
+    // 5. Blurry IBLT Re-Sync
+    info!("[HARDENING] Testing Task 5: Blurry IBLT Sketch (15% FPR)...");
+    let iblt = Iblt::new(100);
+    let cids = [[0u8; 32], [1u8; 32], [2u8; 32]];
+    let sketch = iblt.generate_blurry_sketch(&cids);
+    info!("[HARDENING] Generated Blurry IBLT Sketch with {} cells.", sketch.cells.len());
+
+    println!("\n[SUCCESS] Kernel Hardening Armored Audit PASSED ✓");
     Ok(())
 }

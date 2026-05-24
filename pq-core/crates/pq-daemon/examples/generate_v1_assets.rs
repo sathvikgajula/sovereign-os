@@ -1,4 +1,4 @@
-use pq_crypto::SigningKeypair;
+use pqc::SigningKeypair;
 use serde::{Serialize, Deserialize};
 use std::fs;
 

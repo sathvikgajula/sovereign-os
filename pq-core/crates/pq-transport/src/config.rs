@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_pq_quic_config_creation() {
-        let config = PqQuicConfig::new();
+        let config = PqQuicConfig::new(false);
         assert!(config.is_ok(), "PqQuicConfig should initialize successfully");
     }
 }

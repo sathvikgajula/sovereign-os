@@ -81,7 +81,8 @@ impl NostrSignaler {
     /// Initialize the signaler with Tor camouflage and active "Mute" monitoring.
     pub async fn new(reputation: Arc<pq_reputation::ReputationManager>) -> anyhow::Result<Arc<Self>> {
         let keys = Keys::generate();
-        let proxy_addr: SocketAddr = "127.0.0.1:9052".parse().unwrap();
+        let socks_port = std::env::var("SOCKS_PORT").unwrap_or_else(|_| "9052".to_string());
+        let proxy_addr: SocketAddr = format!("127.0.0.1:{}", socks_port).parse().unwrap();
         let tor_active = Arc::new(AtomicBool::new(false));
         
         info!("[GHOST] Initializing Tor circuit camouflage...");

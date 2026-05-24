@@ -18,6 +18,7 @@ pq-onion = { version = "0.1.0", path = "../pq-onion" }
 anyhow.workspace = true
 rand = "0.8"
 tokio.workspace = true
+tokio-util = { workspace = true }
 serde.workspace = true
 # Tor Integration
 arti-client = { workspace = true }
@@ -28,6 +29,7 @@ hex.workspace = true
 blake3.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 nostr-sdk = { version = "0.44", features = ["nip44", "nip59", "tor"] }
 nostr = { version = "0.44", features = ["nip44", "nip59"] }
 quinn.workspace = true
@@ -35,3 +37,14 @@ chacha20poly1305.workspace = true
 tokio-stream = "0.1.18"
 clap = { version = "4.6.0", features = ["derive"] }
 rustls = { version = "0.23", features = ["ring"] }
+nix = { workspace = true }
+libc = { workspace = true }
+zeroize = "1"
+core_affinity = { workspace = true }
+thread-priority = { workspace = true }
+spin_sleep = { workspace = true }
+crossbeam-channel = "0.5"
+chacha20 = "0.9"
+
+[dev-dependencies]
+pq-voice = { version = "0.1.0", path = "../pq-voice" }

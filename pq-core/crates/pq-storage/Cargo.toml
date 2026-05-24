@@ -10,7 +10,13 @@ moka.workspace = true
 chacha20poly1305.workspace = true
 hex.workspace = true
 tracing.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+tokio-rusqlite = { workspace = true }
+rand = "0.8"
 pq-crypto = { version = "0.1.0", path = "../pq-crypto" }
 pq-identity = { version = "0.1.0", path = "../pq-identity" }
 pq-reputation = { version = "0.1.0", path = "../pq-reputation" }
+pq-dht = { version = "0.1.0", path = "../pq-dht" }
 tokio.workspace = true

@@ -16,6 +16,11 @@ pub struct ReputationScore {
     pub sigma_jitter: f64, // Moving average jitter in ms
     pub success_streak: u32,
     pub frozen_until: u64, // Unix timestamp in ms
+    pub outage_penalty_applied: f64,
+    pub penalty_heat: f64,
+    pub delta_t_history: std::collections::VecDeque<f64>,
+    pub bytes_routed_for_others: u64,
+    pub bytes_consumed_by_self: u64,
 }
 
 impl ReputationScore {
@@ -38,6 +43,28 @@ impl ReputationScore {
             .unwrap_or_default()
             .as_millis() as u64;
         self.frozen_until > now
+    }
+
+    /// Calculates the Tit-for-Tat routing ratio. 
+    /// Returns 1.0 if the node has never consumed, otherwise routed/consumed.
+    pub fn bandwidth_ratio(&self) -> f64 {
+        if self.bytes_consumed_by_self == 0 {
+            1.0 // Benefit of the doubt
+        } else {
+            self.bytes_routed_for_others as f64 / self.bytes_consumed_by_self as f64
+        }
+    }
+
+    pub fn delta_t_std_dev(&self) -> f64 {
+        if self.delta_t_history.is_empty() {
+            return 0.0;
+        }
+        let mean = self.delta_t_history.iter().copied().sum::<f64>() / self.delta_t_history.len() as f64;
+        let variance = self.delta_t_history.iter().map(|value| {
+            let diff = mean - *value;
+            diff * diff
+        }).sum::<f64>() / self.delta_t_history.len() as f64;
+        variance.sqrt()
     }
 }
 
@@ -91,7 +118,7 @@ impl ReputationManager {
             mu_ping: 100.0, // Default 100ms
             sigma_jitter: 10.0, // Default 10ms
             success_streak: 0,
-            frozen_until: 0,
+            frozen_until: 0, bytes_routed_for_others: 0, bytes_consumed_by_self: 0, outage_penalty_applied: 0.0, penalty_heat: 0.0, delta_t_history: std::collections::VecDeque::new(),
         });
         
         let mut score = entry.value().clone();
@@ -112,7 +139,7 @@ impl ReputationManager {
                 mu_ping: latency_ms,
                 sigma_jitter: 5.0,
                 success_streak: 0,
-                frozen_until: 0,
+                frozen_until: 0, bytes_routed_for_others: 0, bytes_consumed_by_self: 0, outage_penalty_applied: 0.0, penalty_heat: 0.0, delta_t_history: std::collections::VecDeque::new(),
             });
             
             let score = entry.value_mut();
@@ -158,7 +185,7 @@ impl ReputationManager {
                 mu_ping: 100.0,
                 sigma_jitter: 10.0,
                 success_streak: 0,
-                frozen_until: 0,
+                frozen_until: 0, bytes_routed_for_others: 0, bytes_consumed_by_self: 0, outage_penalty_applied: 0.0, penalty_heat: 0.0, delta_t_history: std::collections::VecDeque::new(),
             });
             
             let score = entry.value_mut();
@@ -216,7 +243,7 @@ impl ReputationManager {
             mu_ping: 100.0,
             sigma_jitter: 10.0,
             success_streak: 0,
-            frozen_until: 0,
+            frozen_until: 0, bytes_routed_for_others: 0, bytes_consumed_by_self: 0, outage_penalty_applied: 0.0, penalty_heat: 0.0, delta_t_history: std::collections::VecDeque::new(),
         });
 
         entry.value_mut().frozen_until = now + duration_ms;
@@ -236,7 +263,7 @@ impl ReputationManager {
                 mu_ping: 100.0,
                 sigma_jitter: 10.0,
                 success_streak: 0,
-                frozen_until: 0,
+                frozen_until: 0, bytes_routed_for_others: 0, bytes_consumed_by_self: 0, outage_penalty_applied: 0.0, penalty_heat: 0.0, delta_t_history: std::collections::VecDeque::new(),
             });
 
             let score = entry.value_mut();

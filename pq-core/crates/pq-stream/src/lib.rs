@@ -7,6 +7,9 @@ use chacha20poly1305::{
 
 pub const CHUNK_SIZE: usize = 65536; // 64KB
 
+pub mod erasure;
+pub mod receipt;
+
 pub struct SovereignStream {
     cipher: ChaCha20Poly1305,
     stream_id: [u8; 32],

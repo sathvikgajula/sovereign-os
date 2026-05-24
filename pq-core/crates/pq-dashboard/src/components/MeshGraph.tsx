@@ -61,7 +61,7 @@ export const MeshGraph: React.FC<MeshGraphProps> = ({ peers }) => {
             .data(links)
             .join("line")
             .attr("stroke", "#333")
-            .attr("stroke-opacity", 0.6)
+            .attr("stroke-opacity", 0.2) // Hydra tunnels low opacity
             .attr("stroke-width", 1);
 
         const node = svg.append("g")
@@ -70,11 +70,20 @@ export const MeshGraph: React.FC<MeshGraphProps> = ({ peers }) => {
             .join("circle")
             .attr("r", d => d.id === 'me' ? 12 : 8)
             .attr("fill", d => {
-                if (d.trust > 0.9) return "#10b981"; // pq-green
-                if (d.trust > 0.4) return "#6b7280"; // pq-gray
-                return "#ef4444"; // pq-red
+                if (d.trust > 0.9) return "var(--color-cyber)";
+                if (d.trust > 0.4) return "var(--color-amber)";
+                return "var(--color-crimson)";
             })
-            .attr("filter", d => d.trust > 0.9 ? "drop-shadow(0 0 8px #10b981)" : "none")
+            .attr("filter", d => {
+                if (d.trust > 0.9) return "drop-shadow(0 0 12px var(--color-cyber))";
+                if (d.trust > 0.4) return "drop-shadow(0 0 6px var(--color-amber))";
+                return "drop-shadow(0 0 8px var(--color-crimson))";
+            })
+            .attr("class", d => {
+                if (d.trust > 0.9) return "animate-pulse cursor-pointer";
+                if (d.trust < 0.4) return "animate-flicker";
+                return "transition-all";
+            })
             .call(d3.drag<SVGCircleElement, Node>()
                 .on("start", dragstarted)
                 .on("drag", dragged)

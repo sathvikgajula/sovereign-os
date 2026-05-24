@@ -11,12 +11,22 @@ use std::time::Duration;
 use tracing::{info, error};
 
 pub mod drg;
+pub mod vault;
+pub mod sync;
+
+use serde::Serialize;
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PqShard {
+    pub cid: String,
+    pub data: Vec<u8>,
+    pub timestamp: u64,
+}
 
 pub const CHUNK_SIZE: usize = 66560; // 65KB (64KB data + AEAD overhead)
 
 /// Institutional-Grade Ephemeral Storage
 pub struct EphemeralStore {
-    /// RAM-based chunk cache with 5-minute TTL
     cache: Cache<[u8; 32], Vec<u8>>,
     reputation: ReputationManager,
 }
@@ -31,7 +41,6 @@ impl EphemeralStore {
         Self { cache, reputation }
     }
 
-    /// Stores a 64KB chunk in RAM.
     pub async fn store_chunk(&self, cid: [u8; 32], data: Vec<u8>) -> Result<()> {
         if data.len() > CHUNK_SIZE {
             return Err(anyhow!("Chunk exceeds 64KB limit"));
@@ -40,10 +49,6 @@ impl EphemeralStore {
         Ok(())
     }
 
-    /// The "Purge-First" Eviction Sequence.
-    /// 1. Verify MAC (ChaCha20-Poly1305)
-    /// 2. Evict IMMEDIATELY from RAM
-    /// 3. Asynchronously update reputation ledger
     pub async fn handle_kill_signal(
         &self,
         cid: [u8; 32],
@@ -54,7 +59,6 @@ impl EphemeralStore {
         peer_did: String,
         public_key_bytes: &[u8],
     ) -> Result<()> {
-        // STEP 1: Verify (Validate ChaCha20-Poly1305 MAC)
         let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
         let nonce = Nonce::from_slice(nonce_bytes);
         let payload = Payload {
@@ -62,23 +66,18 @@ impl EphemeralStore {
             aad,
         };
         
-        // This validates the integrity of the receipt before we do anything.
         let decrypted_receipt = cipher
             .decrypt(nonce, payload)
             .map_err(|_| anyhow!("Invalid Kill Signal MAC. Rejection triggered."))?;
 
-        // STEP 2: Evict (INSTANTLY drop from Moka RAM cache)
         self.cache.remove(&cid).await;
         info!("[STORAGE] Chunk Evicted | CID: {}", hex::encode(cid));
 
-        // STEP 3: Account (Asynchronously dispatch ML-DSA-65 verify and reputation update)
         let rep = self.reputation.clone();
         let cid_hex = hex::encode(cid);
         let pk = public_key_bytes.to_vec();
         
         tokio::task::spawn(async move {
-            // Verify the ML-DSA-65 signature inside the decrypted receipt
-            // Expecting receipt format: [Signature (2420 bytes)] [Original_CID (32 bytes)]
             if decrypted_receipt.len() < 2420 + 32 {
                 error!("[REPUTATION] Malformed receipt data for {}", cid_hex);
                 return;
@@ -94,7 +93,6 @@ impl EphemeralStore {
 
             match verify_signature(signed_cid, signature, &pk) {
                 Ok(_) => {
-                    // Update alpha score to clear bandwidth vouchers
                     if let Err(e) = rep.update_score(peer_did.clone(), true).await {
                         error!("[REPUTATION] Failed to commit payout for {}: {}", peer_did, e);
                     } else {
@@ -114,12 +112,85 @@ impl EphemeralStore {
         self.cache.get(cid).await
     }
 
-    /// Retrieve all CIDs in the cache for dashboard visualization.
     pub async fn get_inventory(&self) -> Vec<String> {
         self.cache
             .iter()
             .map(|(cid, _)| hex::encode(*cid))
             .collect()
+    }
+}
+
+use tokio_rusqlite::Connection;
+use std::path::PathBuf;
+
+/// Persistent Shard Database using tokio-rusqlite.
+#[derive(Clone)]
+pub struct PqDatabase {
+    conn: Connection,
+}
+
+impl PqDatabase {
+    /// Opens the SQLite database in WAL mode and initializes the shard table.
+    pub async fn open(base_path: PathBuf) -> Result<Self> {
+        let db_path = base_path.join("shards.db");
+        let conn = Connection::open(db_path).await
+            .map_err(|e| anyhow!("Failed to open shards.db: {}", e))?;
+        
+        // Use WAL mode for high-concurrency 5G transport
+        conn.call(|conn| {
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA synchronous=NORMAL;
+                 CREATE TABLE IF NOT EXISTS shards (
+                    cid BLOB PRIMARY KEY,
+                    data BLOB,
+                    timestamp INTEGER
+                 );"
+            ).map_err(|e| e.into())
+        }).await.map_err(|e| anyhow!("Failed to initialize shard table in WAL mode: {}", e))?;
+
+        info!("[STORAGE] SQLite Anchored | Mode: WAL | Path: {:?}", base_path);
+
+        Ok(Self { conn })
+    }
+
+    /// Commits an incoming shard to the persistent storage (Asynchronous).
+    pub async fn save_shard(&self, cid: [u8; 32], data: Vec<u8>) -> Result<()> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+
+        self.conn.call(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO shards (cid, data, timestamp) VALUES (?1, ?2, ?3)",
+                rusqlite::params![&cid, &data, timestamp],
+            ).map_err(|e| e.into())
+        }).await.map_err(|e| anyhow!("Failed to persist shard to SQLite: {}", e))?;
+        
+        Ok(())
+    }
+
+    /// Retrieves all persisted shards for cache restoration (Asynchronous).
+    pub async fn get_all_shards(&self) -> Result<Vec<PqShard>> {
+        self.conn.call(|conn| {
+            let mut stmt = conn.prepare("SELECT cid, data, timestamp FROM shards ORDER BY timestamp DESC")?;
+            let rows = stmt.query_map([], |row| {
+                let cid: Vec<u8> = row.get(0)?;
+                let data: Vec<u8> = row.get(1)?;
+                let timestamp: u64 = row.get(2)?;
+                Ok(PqShard {
+                    cid: hex::encode(cid),
+                    data,
+                    timestamp,
+                })
+            })?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+            Ok(results)
+        }).await.map_err(|e| anyhow!("Failed to query shards: {}", e))
     }
 }
 
@@ -170,6 +241,25 @@ mod tests {
         // Wait for async reputation update
         tokio::time::sleep(Duration::from_millis(100)).await;
         
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_pq_database_persistence() -> Result<()> {
+        let base_path = PathBuf::from("/tmp/node_test_async");
+        let _ = std::fs::remove_dir_all(&base_path);
+        std::fs::create_dir_all(&base_path).unwrap();
+        
+        let db = PqDatabase::open(base_path).await?;
+        let cid = [0x11; 32];
+        let data = vec![0x22; 100];
+        
+        db.save_shard(cid, data.clone()).await?;
+        
+        let shards = db.get_all_shards().await?;
+        assert_eq!(shards.len(), 1);
+        assert_eq!(hex::decode(&shards[0].cid).unwrap(), cid);
+        assert_eq!(shards[0].data, data);
         Ok(())
     }
 }
