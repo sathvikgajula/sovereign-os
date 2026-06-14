@@ -1,0 +1,17 @@
+[package]
+name = "sovereign-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+bare-metal = []
+
+[[bin]]
+name = "sovereign-kernel"
+path = "src/main.rs"
+
+[dependencies]
+sovereign-alloc = { path = "../sovereign-alloc", default-features = false, features = ["kernel-minimal"] }
+sovereign-frame = { path = "../sovereign-frame", default-features = false }
+sovereign-hal = { path = "../sovereign-hal", default-features = false }

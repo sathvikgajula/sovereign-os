@@ -1,7 +1,44 @@
-use anyhow::{anyhow, Result};
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 pub use pqcrypto_kyber::kyber768;
 pub use pqcrypto_dilithium::dilithium3;
+
+// ── Error taxonomy (no_std + std) ───────────────────────────────────────────
+
+/// Explicit cryptographic error mapping (replaces `anyhow` in the PQ core).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CryptoError {
+    InvalidPublicKey,
+    InvalidSignature,
+    VerifyFailed,
+    InvalidCiphertext,
+}
+
+pub type CryptoResult<T> = Result<T, CryptoError>;
+
+#[cfg(feature = "std")]
+impl std::fmt::Display for CryptoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CryptoError::InvalidPublicKey => write!(f, "invalid post-quantum public key"),
+            CryptoError::InvalidSignature => write!(f, "invalid post-quantum signature"),
+            CryptoError::VerifyFailed => write!(f, "post-quantum signature verification failed"),
+            CryptoError::InvalidCiphertext => write!(f, "invalid post-quantum ciphertext"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for CryptoError {}
 
 // ── ML-DSA-65 (Dilithium3) Digital Signatures ──────────────────────────────
 
@@ -40,13 +77,12 @@ pub fn verify_signature(
     message: &[u8],
     signature_bytes: &[u8],
     public_key_bytes: &[u8],
-) -> Result<()> {
+) -> CryptoResult<()> {
     let pk = dilithium3::PublicKey::from_bytes(public_key_bytes)
-        .map_err(|_| anyhow!("Invalid ML-DSA-65 public key"))?;
+        .map_err(|_| CryptoError::InvalidPublicKey)?;
     let sig = dilithium3::DetachedSignature::from_bytes(signature_bytes)
-        .map_err(|_| anyhow!("Invalid ML-DSA-65 signature"))?;
-    dilithium3::verify_detached_signature(&sig, message, &pk)
-        .map_err(|_| anyhow!("ML-DSA-65 signature verification failed"))
+        .map_err(|_| CryptoError::InvalidSignature)?;
+    dilithium3::verify_detached_signature(&sig, message, &pk).map_err(|_| CryptoError::VerifyFailed)
 }
 
 // ── ML-KEM-768 (Kyber768) Key Encapsulation ────────────────────────────────
@@ -81,7 +117,6 @@ impl KemKeypair {
     }
 
     /// Encapsulate against this keypair's public key.
-    /// Returns the shared secret and ciphertext.
     pub fn encapsulate(&self) -> Encapsulated {
         let (ss, ct) = kyber768::encapsulate(&self.public_key);
         Encapsulated {
@@ -91,9 +126,9 @@ impl KemKeypair {
     }
 
     /// Decapsulate a ciphertext to recover the shared secret.
-    pub fn decapsulate(&self, ciphertext_bytes: &[u8]) -> Result<Vec<u8>> {
+    pub fn decapsulate(&self, ciphertext_bytes: &[u8]) -> CryptoResult<Vec<u8>> {
         let ct = kyber768::Ciphertext::from_bytes(ciphertext_bytes)
-            .map_err(|_| anyhow!("Invalid ML-KEM-768 ciphertext"))?;
+            .map_err(|_| CryptoError::InvalidCiphertext)?;
         let ss = kyber768::decapsulate(&ct, &self.secret_key);
         Ok(ss.as_bytes().to_vec())
     }

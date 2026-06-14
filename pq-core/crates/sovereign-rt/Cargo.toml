@@ -1,0 +1,14 @@
+[package]
+name = "sovereign-rt"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = ["dep:thread-priority"]
+
+[dependencies]
+sovereign-alloc = { path = "../sovereign-alloc" }
+sovereign-hal = { path = "../sovereign-hal" }
+libc = { workspace = true }
+thread-priority = { workspace = true, optional = true }

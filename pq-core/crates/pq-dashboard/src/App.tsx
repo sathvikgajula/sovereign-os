@@ -4,6 +4,7 @@ import { MeshGraph } from "./components/MeshGraph";
 import { FlatlineChart } from "./components/FlatlineChart";
 import { TerminalLog } from "./components/TerminalLog";
 import { VisualShardCache } from "./components/VisualShardCache";
+import { useTelemetry } from "./hooks/useTelemetry";
 import { listen } from "@tauri-apps/api/event";
 import { Shield, Send, Terminal, Zap, Layers, Activity, Link2, Link2Off } from "lucide-react";
 
@@ -21,6 +22,7 @@ interface LiveStreamMetrics {
 }
 
 function App() {
+  const { snapshot: telemetrySnapshot, history: telemetryHistory } = useTelemetry();
   const [peers, setPeers] = useState<Peer[]>([]);
   const [recipient, setRecipient] = useState("");
   const [message, setMessage] = useState("");
@@ -214,7 +216,7 @@ function App() {
         {/* RIGHT COLUMN: Telemetry & CBR Flatline */}
         <section className="flex flex-col gap-6">
           <div className="bg-zinc-900/50 backdrop-blur-xl border border-white/5 rounded-2xl p-5 h-64 flex flex-col">
-             <FlatlineChart relayA={metrics?.relay_a_bytes || 0} relayB={metrics?.relay_b_bytes || 0} active={metrics?.active || false} />
+             <FlatlineChart history={telemetryHistory} latest={telemetrySnapshot} />
           </div>
 
           <div className="bg-zinc-900/50 backdrop-blur-xl border border-white/5 rounded-2xl p-5 flex flex-col shrink-0 border-crimson/20 border">

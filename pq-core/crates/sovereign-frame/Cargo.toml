@@ -1,0 +1,7 @@
+[package]
+name = "sovereign-frame"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []

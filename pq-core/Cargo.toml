@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/sovereign-hal",
+    "crates/sovereign-rt",
+    "crates/sovereign-frame",
+    "crates/sovereign-alloc",
+    "crates/sovereign-kernel",
     "crates/pq-crypto",
     "crates/pq-identity",
     "crates/pq-transport",
@@ -48,3 +53,8 @@ core_affinity = "0.8"
 rand_chacha = "0.3"
 nix = { version = "0.29", features = ["net", "socket", "time"] }
 libc = "0.2"
+sovereign-hal = { path = "crates/sovereign-hal" }
+sovereign-rt = { path = "crates/sovereign-rt" }
+sovereign-frame = { path = "crates/sovereign-frame" }
+sovereign-alloc = { path = "crates/sovereign-alloc" }
+sovereign-kernel = { path = "crates/sovereign-kernel" }

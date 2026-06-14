@@ -40,8 +40,8 @@ rustls = { version = "0.23", features = ["ring"] }
 nix = { workspace = true }
 libc = { workspace = true }
 zeroize = "1"
-core_affinity = { workspace = true }
-thread-priority = { workspace = true }
+sovereign-frame = { path = "../sovereign-frame" }
+sovereign-rt = { path = "../sovereign-rt" }
 spin_sleep = { workspace = true }
 crossbeam-channel = "0.5"
 chacha20 = "0.9"

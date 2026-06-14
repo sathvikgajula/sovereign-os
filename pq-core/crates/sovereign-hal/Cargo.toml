@@ -1,0 +1,11 @@
+[package]
+name = "sovereign-hal"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = ["dep:core_affinity"]
+
+[dependencies]
+core_affinity = { workspace = true, optional = true }

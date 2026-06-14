@@ -5195,7 +5195,6 @@ dependencies = [
  "chacha20",
  "chacha20poly1305",
  "clap",
- "core_affinity",
  "crossbeam-channel",
  "hex",
  "libc",
@@ -5215,8 +5214,9 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sovereign-frame",
+ "sovereign-rt",
  "spin_sleep",
- "thread-priority",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -6751,6 +6751,40 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "sovereign-alloc"
+version = "0.1.0"
+
+[[package]]
+name = "sovereign-frame"
+version = "0.1.0"
+
+[[package]]
+name = "sovereign-hal"
+version = "0.1.0"
+dependencies = [
+ "core_affinity",
+]
+
+[[package]]
+name = "sovereign-kernel"
+version = "0.1.0"
+dependencies = [
+ "sovereign-alloc",
+ "sovereign-frame",
+ "sovereign-hal",
+]
+
+[[package]]
+name = "sovereign-rt"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "sovereign-alloc",
+ "sovereign-hal",
+ "thread-priority",
 ]
 
 [[package]]

@@ -3,8 +3,12 @@ name = "pq-crypto"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["std"]
+std = ["dep:anyhow"]
+
 [dependencies]
-anyhow = { workspace = true }
+anyhow = { workspace = true, optional = true }
 pqcrypto-kyber = { workspace = true }
 pqcrypto-dilithium = { workspace = true }
 serde = { workspace = true }

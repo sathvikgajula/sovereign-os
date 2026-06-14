@@ -68,6 +68,20 @@ Through our adaptive entropy injection metronome, the transition from idle state
 $$|r| < 0.01$$
 The lock-free sequence-locked telemetry broker (`AtomicTelemetry`) decouples UI interaction from the real-time systems layer. In benchmarks measuring the Pearson Cross-Correlation ($r$) between packet emission skew (scheduling latency) and active queue depth (active messaging demand), the coefficient converges to $|r| < 0.01$. This validates that the 4 Hz Seqlock event pump prevents L3 cache-line bouncing and lock-contention side-channels.
 
+### D. Metadata Volumetric Invisibility (Empirical Figures)
+
+Live-fire benchmark output from `analyze_traffic.py` produces high-DPI transparent figures under `docs/assets/`:
+
+**Figure 1 — Core 0 Mach RT clock-skew flatline** (immaculate 0µs scheduling baseline):
+
+![Core 0 clock-skew flatline](./docs/assets/fig1_clock_skew_flatline.png)
+
+**Figure 2 — IPD timing camouflage** (overlapping KDE: Pure Decoy vs Active Payload, $D_{JS} < 0.05$ bits):
+
+![IPD KDE overlap — timing indistinguishability](./docs/assets/fig2_ipd_kde_overlap.png)
+
+Structured validation metrics are serialized to `/tmp/antigravity/simulation_metrics.json` after each benchmark run.
+
 ---
 
 ## 3. Quickstart & Live-Fire Benchmark
@@ -77,7 +91,7 @@ Follow these steps to build the project and execute the statistical indistinguis
 ### Prerequisites
 Ensure you have the following installed on your target system:
 - **Rust**: Version `1.75+` (with Cargo)
-- **Python**: Version `3.10+` (with `numpy` and `scipy` installed for statistical analysis)
+- **Python**: Version `3.10+` (with `numpy`, `scipy`, `matplotlib`, and `seaborn` for statistical analysis and figure generation)
 - **tcpdump / tshark**: Optional (the analysis substrate automatically engages a zero-copy synthetic capture generator if permissions block raw loopback sniffing).
 
 ### 1. Compile the Project
@@ -90,6 +104,16 @@ cargo build --release -p pq-daemon
 Execute the automated traffic capture, packet injection, and analysis suite. The script runs a 3-minute, two-phase simulation:
 ```bash
 ./crates/pq-daemon/run_benchmark.sh
+```
+
+For paper-grade consistency across multiple runs, execute three trials and aggregate median statistics (JSD, Shannon entropy, Pearson *r*) into publication-ready figures:
+```bash
+./crates/pq-daemon/run_benchmark.sh --multi-trial
+```
+
+Or aggregate existing trial payloads manually:
+```bash
+python3 crates/pq-daemon/analyze_traffic.py --aggregate /tmp/antigravity/trials
 ```
 
 ### 3. Launch the Tauri Dashboard

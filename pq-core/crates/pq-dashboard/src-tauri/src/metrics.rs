@@ -41,6 +41,7 @@ pub struct TelemetrySnapshot {
 /// A sequence-locked atomic telemetry storage page.
 /// Enables lock-free writes from the real-time metronome context (single writer)
 /// and lock-free reads from the UI background thread without any Mutex lock contention.
+#[repr(C, align(64))]
 pub struct AtomicTelemetry {
     pub seq: AtomicU64,
     pub epoch: AtomicU64,
