@@ -9,7 +9,6 @@ use super::mmio::{QEMU_VIRTIO_MMIO_BASE, QEMU_VIRTIO_MMIO_FALLBACKS};
 use super::queue::{RxVirtqueue, TxVirtqueue, RX_BUF_LEN};
 use crate::dma;
 use crate::driver::{DriverError, NetRx, NetTx};
-#[cfg(target_arch = "aarch64")]
 use crate::uart;
 use sovereign_frame::FRAME_LEN;
 use sovereign_hal::arch::cpu_pause;
@@ -152,6 +151,9 @@ impl VirtioNet {
         #[cfg(target_arch = "x86_64")]
         {
             for &base in QEMU_VIRTIO_MMIO_FALLBACKS {
+                if Self::probe_modern(base, out).is_ok() {
+                    return Ok(());
+                }
                 if Self::probe_legacy(base, out).is_ok() {
                     return Ok(());
                 }
@@ -161,7 +163,6 @@ impl VirtioNet {
     }
 
     /// VirtIO 1.0 modern handshake at `base`.
-    #[cfg(target_arch = "aarch64")]
     unsafe fn probe_modern(base: usize, out: &mut Self) -> Result<(), DriverError> {
         let mmio = VirtioMmio::new(base);
         if !mmio.is_net_device() {
@@ -192,16 +193,13 @@ impl VirtioNet {
         post_notify_fence();
 
         out.ready = true;
-        #[cfg(target_arch = "aarch64")]
-        {
-            uart::write_str("VirtIO NET DRIVER_OK mac=");
-            for b in out.eth_src {
-                uart::write_u8_hex(b);
-            }
-            uart::write_str(" dma=");
-            uart::write_u16((dma::DMA_ARENA_BASE >> 16) as u16);
-            uart::putc(b'\n');
+        uart::write_str("VirtIO NET DRIVER_OK mac=");
+        for b in out.eth_src {
+            uart::write_u8_hex(b);
         }
+        uart::write_str(" dma=");
+        uart::write_u16((dma::dma_arena_base() >> 16) as u16);
+        uart::putc(b'\n');
         Ok(())
     }
 
@@ -242,6 +240,9 @@ impl VirtioNet {
                 rx.desc_phys(),
                 rx.avail_phys(),
                 rx.used_phys(),
+                #[cfg(target_arch = "x86_64")]
+                false,
+                #[cfg(target_arch = "aarch64")]
                 true,
             )
             .map_err(|_| DriverError::DeviceNotReady)? as usize;
@@ -288,6 +289,9 @@ impl VirtioNet {
                 desc_phys,
                 tx.avail_phys(),
                 tx.used_phys(),
+                #[cfg(target_arch = "x86_64")]
+                false,
+                #[cfg(target_arch = "aarch64")]
                 true,
             )
             .map_err(|_| DriverError::DeviceNotReady)? as usize;
@@ -393,6 +397,8 @@ fn post_notify_fence() {
     unsafe {
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
     }
+    #[cfg(target_arch = "x86_64")]
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 #[inline(always)]
@@ -401,7 +407,14 @@ fn dma_arena_nc_active() -> bool {
     {
         return crate::mmu::aarch64::is_live();
     }
-    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    {
+        return crate::mmu::x86_64::is_live();
+    }
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_os = "none"),
+        all(target_arch = "x86_64", target_os = "none")
+    )))]
     {
         false
     }

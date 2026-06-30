@@ -34,12 +34,13 @@ jobs:
             --bin sovereign-kernel \
             --features rx-lab
 
-      - name: Build x86_64 kernel
+      - name: Build x86_64 kernel (smoltcp + rx-lab)
         run: |
           cargo build -p sovereign-kernel \
             --target x86_64-unknown-none \
             --release \
-            --bin sovereign-kernel
+            --bin sovereign-kernel \
+            --features rx-lab
 
       - name: Kernel crate lib tests (host)
         run: cargo test -p sovereign-alloc -p sovereign-frame -p sovereign-hal --lib
