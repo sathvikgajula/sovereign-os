@@ -24,7 +24,7 @@ pub(crate) fn rt_log_fmt(args: core::fmt::Arguments<'_>) {
     let _ = buf.write_fmt(args);
     if buf.pos > 0 {
         unsafe {
-            libc::write(2, buf.data.as_ptr() as *const libc::c_void, buf.pos);
+            libc::write(2, buf.data.as_ptr() as *const libc::c_void, buf.pos as libc::c_uint);
             libc::write(2, b"\n".as_ptr() as *const libc::c_void, 1);
         }
     }
