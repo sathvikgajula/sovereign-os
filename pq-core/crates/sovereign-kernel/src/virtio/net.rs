@@ -1,7 +1,5 @@
 //! VirtIO-net MMIO transmit path conforming to `NetTx`.
 
-use core::cell::UnsafeCell;
-
 use super::mmio::VirtioMmio;
 
 #[cfg(target_arch = "aarch64")]
@@ -9,6 +7,7 @@ use super::mmio::{QEMU_VIRTIO_MMIO_BASE, QEMU_VIRTIO_MMIO_SLOTS, QEMU_VIRTIO_MMI
 #[cfg(target_arch = "x86_64")]
 use super::mmio::{QEMU_VIRTIO_MMIO_BASE, QEMU_VIRTIO_MMIO_FALLBACKS};
 use super::queue::{RxVirtqueue, TxVirtqueue, RX_BUF_LEN};
+use crate::dma;
 use crate::driver::{DriverError, NetRx, NetTx};
 #[cfg(target_arch = "aarch64")]
 use crate::uart;
@@ -98,11 +97,10 @@ fn assemble_tx_block(buf: &mut [u8; FRAME_LEN], eth_src: &[u8; 6], metronome: &[
 }
 
 /// Non-allocating virtio-net adapter for QEMU `virt` MMIO transport.
-#[repr(C, align(16))]
 pub struct VirtioNet {
     mmio: VirtioMmio,
-    rx: UnsafeCell<RxVirtqueue<QUEUE_DEPTH>>,
-    tx: UnsafeCell<TxVirtqueue<QUEUE_DEPTH>>,
+    rx: &'static core::cell::UnsafeCell<RxVirtqueue<QUEUE_DEPTH>>,
+    tx: &'static core::cell::UnsafeCell<TxVirtqueue<QUEUE_DEPTH>>,
     eth_src: [u8; 6],
     rx_depth: usize,
     rx_ring_mask: usize,
@@ -115,12 +113,12 @@ pub struct VirtioNet {
 unsafe impl Sync for VirtioNet {}
 
 impl VirtioNet {
-    /// Placeholder for in-place probe (virtqueues live in `.bss` via `static mut NET`).
-    pub const fn empty() -> Self {
+    /// Placeholder before in-place probe (virtqueues live in the NC DMA arena).
+    pub fn empty() -> Self {
         Self {
             mmio: VirtioMmio::new(0),
-            rx: UnsafeCell::new(RxVirtqueue::new()),
-            tx: UnsafeCell::new(TxVirtqueue::new()),
+            rx: dma::rx_queue(),
+            tx: dma::tx_queue(),
             eth_src: [0; 6],
             rx_depth: 0,
             rx_ring_mask: 0,
@@ -194,11 +192,16 @@ impl VirtioNet {
         post_notify_fence();
 
         out.ready = true;
-        uart::write_str("VirtIO NET DRIVER_OK mac=");
-        for b in out.eth_src {
-            uart::write_u8_hex(b);
+        #[cfg(target_arch = "aarch64")]
+        {
+            uart::write_str("VirtIO NET DRIVER_OK mac=");
+            for b in out.eth_src {
+                uart::write_u8_hex(b);
+            }
+            uart::write_str(" dma=");
+            uart::write_u16((dma::DMA_ARENA_BASE >> 16) as u16);
+            uart::putc(b'\n');
         }
-        uart::putc(b'\n');
         Ok(())
     }
 
@@ -259,10 +262,10 @@ impl VirtioNet {
         }
         let desc_start = rx.desc.as_ptr() as usize;
         let desc_end = desc_start + core::mem::size_of::<super::queue::VirtqDesc>() * depth;
-        clean_dcache_range(desc_start, desc_end);
+        dma_write_sync(desc_start, desc_end);
         let avail_start = core::ptr::addr_of!(rx.avail) as usize;
         let avail_end = avail_start + core::mem::size_of_val(&rx.avail);
-        clean_dcache_range(avail_start, avail_end);
+        dma_write_sync(avail_start, avail_end);
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         rx.avail.idx = depth as u16;
         pre_notify_fence();
@@ -329,7 +332,39 @@ fn post_notify_fence() {
     }
 }
 
-/// Clean guest memory range to PoC so virtio DMA sees driver writes (aarch64).
+#[inline(always)]
+fn dma_arena_nc_active() -> bool {
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    {
+        return crate::mmu::aarch64::is_live();
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+    {
+        false
+    }
+}
+
+/// Sync driver writes visible to virtio DMA (skip D-cache clean inside NC arena).
+#[inline(always)]
+fn dma_write_sync(start: usize, end: usize) {
+    if dma::range_in_arena(start, end) && dma_arena_nc_active() {
+        pre_notify_fence();
+        return;
+    }
+    clean_dcache_range(start, end);
+}
+
+/// Sync device writes visible to the CPU (skip D-cache invalidate inside NC arena).
+#[inline(always)]
+fn dma_read_sync(start: usize, end: usize) {
+    if dma::range_in_arena(start, end) && dma_arena_nc_active() {
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+        return;
+    }
+    invalidate_dcache_range(start, end);
+}
+
+/// Clean guest memory range to PoC so virtio DMA sees driver writes (cached RAM only).
 #[inline(always)]
 fn clean_dcache_range(start: usize, end: usize) {
     #[cfg(target_arch = "aarch64")]
@@ -351,20 +386,8 @@ fn clean_dcache_range(start: usize, end: usize) {
 /// Clean guest TX buffer to PoC so virtio DMA sees descriptor writes (Apple Silicon / QEMU).
 #[inline(always)]
 fn clean_tx_buffer(buf: &[u8; FRAME_LEN]) {
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        let start = buf.as_ptr() as usize;
-        let end = start + FRAME_LEN;
-        let mut ctr: usize;
-        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr);
-        let line = 4 << ((ctr >> 16) & 0xf);
-        let mut addr = start & !(line - 1);
-        while addr < end {
-            core::arch::asm!("dc cvac, {}", in(reg) addr);
-            addr += line;
-        }
-        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-    }
+    let start = buf.as_ptr() as usize;
+    dma_write_sync(start, start + FRAME_LEN);
 }
 
 #[inline(always)]
@@ -401,7 +424,7 @@ fn invalidate_dcache_range(start: usize, end: usize) {
 fn read_used_idx<const N: usize>(used: &super::queue::VirtqUsed<N>) -> u16 {
     let used_start = core::ptr::addr_of!(used.idx) as usize;
     let used_end = used_start + core::mem::size_of_val(used);
-    invalidate_dcache_range(used_start, used_end);
+    dma_read_sync(used_start, used_end);
     core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
     unsafe { core::ptr::read_volatile(&used.idx as *const u16) }
 }
@@ -426,7 +449,7 @@ where
             let len = frame_len.min(RX_BUF_LEN);
             if len > 0 {
                 let start = buf.as_ptr() as usize;
-                invalidate_dcache_range(start, start + len);
+                dma_read_sync(start, start + len);
                 let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
                 handler(slice, len);
                 delivered += 1;
@@ -443,7 +466,7 @@ where
     if delivered > 0 {
         let avail_start = core::ptr::addr_of!(rx.avail) as usize;
         let avail_end = avail_start + core::mem::size_of_val(&rx.avail);
-        clean_dcache_range(avail_start, avail_end);
+        dma_write_sync(avail_start, avail_end);
     }
 
     delivered
@@ -531,13 +554,13 @@ impl NetTx for VirtioNet {
 
         let desc_start = core::ptr::addr_of!(tx.desc[idx]) as usize;
         let desc_end = desc_start + core::mem::size_of::<super::queue::VirtqDesc>();
-        clean_dcache_range(desc_start, desc_end);
+        dma_write_sync(desc_start, desc_end);
         let avail_start = core::ptr::addr_of!(tx.avail) as usize;
         let avail_end = avail_start + core::mem::size_of_val(&tx.avail);
-        clean_dcache_range(avail_start, avail_end);
+        dma_write_sync(avail_start, avail_end);
         let queue_start = tx as *const TxVirtqueue<QUEUE_DEPTH> as usize;
         let queue_end = queue_start + core::mem::size_of_val(&*tx);
-        clean_dcache_range(queue_start, queue_end);
+        dma_write_sync(queue_start, queue_end);
 
         static mut TX_LOGGED: bool = false;
         unsafe {

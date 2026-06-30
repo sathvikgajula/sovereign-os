@@ -3,8 +3,11 @@
 #![no_std]
 
 pub mod boot;
+pub mod dma;
 pub mod driver;
 pub mod entry;
+#[cfg(target_arch = "aarch64")]
+pub mod mmu;
 pub mod timer;
 pub mod uart;
 pub mod virtio;

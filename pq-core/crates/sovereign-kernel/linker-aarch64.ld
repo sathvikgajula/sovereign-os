@@ -7,6 +7,7 @@ SECTIONS
 
     .text : {
         KEEP(*(.text._start))
+        KEEP(*(.text.vectors))
         *(.text .text.*)
     }
 
@@ -36,4 +37,12 @@ SECTIONS
     __stack_bottom = .;
     . += 0x100000;
     __stack_top = .;
+
+    /* Virtio DMA arena — fixed PA, mapped NC via aarch64 MMU (see mmu/aarch64.rs). */
+    .dma_arena 0x48000000 (NOLOAD) : {
+        __dma_arena_start = .;
+        *(.dma_arena)
+        . = ALIGN(4096);
+        __dma_arena_end = .;
+    }
 }

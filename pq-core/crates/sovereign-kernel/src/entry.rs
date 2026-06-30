@@ -60,6 +60,13 @@ pub extern "C" fn kernel_main() -> ! {
 
     clear_bss();
 
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        crate::mmu::aarch64::build_tables();
+        crate::dma::init_virtio_queues();
+        uart::write_str("DMA arena @0x4800; MMU tables built\n");
+    }
+
     static mut NET: Option<VirtioNet> = None;
     unsafe {
         NET = Some(VirtioNet::empty());
