@@ -41,6 +41,14 @@ pub fn write_str(s: &str) {
     }
 }
 
+/// Two-digit hex nybble print for MAC / debug bytes.
+#[inline(always)]
+pub fn write_u8_hex(b: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    putc(HEX[(b >> 4) as usize]);
+    putc(HEX[(b & 0x0f) as usize]);
+}
+
 /// Decimal print for `u16` — zero heap (PL011 metrics).
 #[inline(always)]
 pub fn write_u16(mut n: u16) {
@@ -65,4 +73,12 @@ pub fn write_u16(mut n: u16) {
 #[inline(always)]
 pub fn log_tx_notify_slot31() {
     write_str("TX Notify Slot 31\n");
+}
+
+/// RX activity trace — length only to keep UART output bounded.
+#[inline(always)]
+pub fn log_rx_frame(len: usize) {
+    write_str("RX frame len=");
+    write_u16(len.min(u16::MAX as usize) as u16);
+    putc(b'\n');
 }

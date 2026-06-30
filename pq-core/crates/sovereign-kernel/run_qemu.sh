@@ -87,7 +87,7 @@ echo "[*] Console log: $CONSOLE_LOG"
 echo "────────────────────────────────────────────────────────────────"
 
 echo "[*] Building sovereign-kernel (${TARGET})..."
-if ! cargo build -p sovereign-kernel --target "$TARGET" --release 2>&1 | tail -8; then
+if ! cargo build -p sovereign-kernel --target "$TARGET" --release --bin sovereign-kernel 2>&1 | tail -8; then
     echo "[!] Build failed for ${TARGET}"
     exit 1
 fi

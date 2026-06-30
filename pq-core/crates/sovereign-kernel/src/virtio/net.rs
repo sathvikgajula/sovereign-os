@@ -8,8 +8,8 @@ use super::mmio::VirtioMmio;
 use super::mmio::{QEMU_VIRTIO_MMIO_BASE, QEMU_VIRTIO_MMIO_SLOTS, QEMU_VIRTIO_MMIO_STRIDE, QEMU_VIRTIO_NET_SLOT};
 #[cfg(target_arch = "x86_64")]
 use super::mmio::{QEMU_VIRTIO_MMIO_BASE, QEMU_VIRTIO_MMIO_FALLBACKS};
-use super::queue::TxVirtqueue;
-use crate::driver::{DriverError, NetTx};
+use super::queue::{RxVirtqueue, TxVirtqueue, RX_BUF_LEN};
+use crate::driver::{DriverError, NetRx, NetTx};
 #[cfg(target_arch = "aarch64")]
 use crate::uart;
 use sovereign_frame::FRAME_LEN;
@@ -101,7 +101,7 @@ fn assemble_tx_block(buf: &mut [u8; FRAME_LEN], eth_src: &[u8; 6], metronome: &[
 #[repr(C, align(16))]
 pub struct VirtioNet {
     mmio: VirtioMmio,
-    rx: UnsafeCell<TxVirtqueue<QUEUE_DEPTH>>,
+    rx: UnsafeCell<RxVirtqueue<QUEUE_DEPTH>>,
     tx: UnsafeCell<TxVirtqueue<QUEUE_DEPTH>>,
     eth_src: [u8; 6],
     rx_depth: usize,
@@ -119,7 +119,7 @@ impl VirtioNet {
     pub const fn empty() -> Self {
         Self {
             mmio: VirtioMmio::new(0),
-            rx: UnsafeCell::new(TxVirtqueue::new()),
+            rx: UnsafeCell::new(RxVirtqueue::new()),
             tx: UnsafeCell::new(TxVirtqueue::new()),
             eth_src: [0; 6],
             rx_depth: 0,
@@ -194,7 +194,11 @@ impl VirtioNet {
         post_notify_fence();
 
         out.ready = true;
-        uart::write_str("VirtIO NET DRIVER_OK\n");
+        uart::write_str("VirtIO NET DRIVER_OK mac=");
+        for b in out.eth_src {
+            uart::write_u8_hex(b);
+        }
+        uart::putc(b'\n');
         Ok(())
     }
 
@@ -235,7 +239,7 @@ impl VirtioNet {
                 rx.desc_phys(),
                 rx.avail_phys(),
                 rx.used_phys(),
-                false,
+                true,
             )
             .map_err(|_| DriverError::DeviceNotReady)? as usize;
 
@@ -247,7 +251,7 @@ impl VirtioNet {
             let addr = rx.buffers[i].as_ptr() as u64;
             rx.desc[i] = super::queue::VirtqDesc {
                 addr,
-                len: FRAME_LEN as u32,
+                len: RX_BUF_LEN as u32,
                 flags: VIRTQ_DESC_F_WRITE,
                 next: 0,
             };
@@ -288,6 +292,32 @@ impl VirtioNet {
         self.tx_depth = depth;
         self.tx_ring_mask = depth - 1;
         Ok(())
+    }
+
+    /// Current RX used-ring index (device write cursor).
+    pub fn rx_used_idx(&self) -> u16 {
+        if !self.ready || self.rx_depth == 0 {
+            return 0;
+        }
+        let rx = unsafe { &*self.rx.get() };
+        read_used_idx(&rx.used)
+    }
+
+    /// Inject a synthetic used-ring entry to validate `poll_rx` without external traffic.
+    pub unsafe fn inject_selftest_rx(&self) {
+        if !self.ready || self.rx_depth == 0 {
+            return;
+        }
+        let rx = &mut *self.rx.get();
+        const MSG: &[u8] = b"RX_SELFTEST";
+        rx.buffers[0][..MSG.len()].copy_from_slice(MSG);
+        core::ptr::write_volatile(&mut rx.used.ring[0].id as *mut u32 as *mut u32, 0);
+        core::ptr::write_volatile(
+            &mut rx.used.ring[0].len as *mut u32 as *mut u32,
+            MSG.len() as u32,
+        );
+        core::ptr::write_volatile(&mut rx.used.idx as *mut u16 as *mut u16, 1);
+        rx.last_used = 0;
     }
 }
 
@@ -368,37 +398,91 @@ fn invalidate_dcache_range(start: usize, end: usize) {
 }
 
 #[inline(always)]
-fn read_used_idx(tx: &TxVirtqueue<QUEUE_DEPTH>) -> u16 {
-    let used_start = core::ptr::addr_of!(tx.used) as usize;
-    let used_end = used_start + core::mem::size_of_val(&tx.used);
+fn read_used_idx<const N: usize>(used: &super::queue::VirtqUsed<N>) -> u16 {
+    let used_start = core::ptr::addr_of!(used.idx) as usize;
+    let used_end = used_start + core::mem::size_of_val(used);
     invalidate_dcache_range(used_start, used_end);
-    unsafe { core::ptr::read_volatile(&tx.used.idx as *const u16) }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+    unsafe { core::ptr::read_volatile(&used.idx as *const u16) }
 }
 
 #[inline(always)]
-fn recycle_rx_queue(rx: &mut TxVirtqueue<QUEUE_DEPTH>, ring_mask: usize) {
-    let used_idx = read_used_idx(rx);
-    while rx.last_used != used_idx {
+fn drain_rx_queue<F>(rx: &mut RxVirtqueue<QUEUE_DEPTH>, ring_mask: usize, handler: &mut F) -> usize
+where
+    F: FnMut(&[u8], usize),
+{
+    let mut delivered = 0usize;
+    loop {
+        let used_idx = read_used_idx(&rx.used);
+        if rx.last_used == used_idx {
+            break;
+        }
         let pos = (rx.last_used as usize) & ring_mask;
-        let desc_id = unsafe {
-            core::ptr::read_volatile(&rx.used.ring[pos].id as *const u32)
-        };
+        let desc_id = unsafe { core::ptr::read_volatile(&rx.used.ring[pos].id as *const u32) } as usize;
+        let frame_len = unsafe { core::ptr::read_volatile(&rx.used.ring[pos].len as *const u32) } as usize;
+
+        if desc_id < QUEUE_DEPTH {
+            let buf = &rx.buffers[desc_id];
+            let len = frame_len.min(RX_BUF_LEN);
+            if len > 0 {
+                let start = buf.as_ptr() as usize;
+                invalidate_dcache_range(start, start + len);
+                let slice = unsafe { core::slice::from_raw_parts(buf.as_ptr(), len) };
+                handler(slice, len);
+                delivered += 1;
+            }
+        }
+
         let head = rx.avail.idx;
         let avail_pos = (head as usize) & ring_mask;
         rx.avail.ring[avail_pos] = desc_id as u16;
         rx.avail.idx = head.wrapping_add(1);
         rx.last_used = rx.last_used.wrapping_add(1);
     }
-    let avail_start = core::ptr::addr_of!(rx.avail) as usize;
-    let avail_end = avail_start + core::mem::size_of_val(&rx.avail);
-    clean_dcache_range(avail_start, avail_end);
+
+    if delivered > 0 {
+        let avail_start = core::ptr::addr_of!(rx.avail) as usize;
+        let avail_end = avail_start + core::mem::size_of_val(&rx.avail);
+        clean_dcache_range(avail_start, avail_end);
+    }
+
+    delivered
+}
+
+/// Poll RX virtqueue, deliver frames, and re-post buffers to the device.
+#[inline(always)]
+fn poll_rx_inner<F>(net: &VirtioNet, handler: &mut F) -> Result<usize, DriverError>
+where
+    F: FnMut(&[u8], usize),
+{
+    if !net.ready || net.rx_depth == 0 {
+        return Err(DriverError::DeviceNotReady);
+    }
+
+    unsafe {
+        net.mmio.ack_interrupt();
+    }
+
+    let rx = unsafe { &mut *net.rx.get() };
+    let delivered = drain_rx_queue(rx, net.rx_ring_mask, handler);
+
+    if delivered > 0 {
+        pre_notify_fence();
+        unsafe {
+            net.mmio.notify(RX_QUEUE_INDEX);
+            net.mmio.ack_interrupt();
+        }
+        post_notify_fence();
+    }
+
+    Ok(delivered)
 }
 
 #[inline(always)]
 fn wait_tx_ring_slot(tx: &TxVirtqueue<QUEUE_DEPTH>, depth: usize) {
     let mut spins = 0u32;
     loop {
-        let used_idx = read_used_idx(tx);
+        let used_idx = read_used_idx(&tx.used);
         let inflight = tx.avail.idx.wrapping_sub(used_idx);
         if inflight < depth as u16 {
             return;
@@ -419,14 +503,6 @@ impl NetTx for VirtioNet {
 
         let depth = self.tx_depth;
         let ring_mask = self.tx_ring_mask;
-
-        if self.rx_depth > 0 {
-            let rx = unsafe { &mut *self.rx.get() };
-            recycle_rx_queue(rx, self.rx_ring_mask);
-            unsafe {
-                self.mmio.ack_interrupt();
-            }
-        }
 
         let tx = unsafe { &mut *self.tx.get() };
         wait_tx_ring_slot(tx, depth);
@@ -466,6 +542,7 @@ impl NetTx for VirtioNet {
         static mut TX_LOGGED: bool = false;
         unsafe {
             if !TX_LOGGED {
+                #[cfg(target_arch = "aarch64")]
                 uart::log_tx_notify_slot31();
                 TX_LOGGED = true;
             }
@@ -479,25 +556,36 @@ impl NetTx for VirtioNet {
         unsafe {
             self.mmio.ack_interrupt();
         }
-        let used_idx = read_used_idx(tx);
+        let used_idx = read_used_idx(&tx.used);
 
         // Wait briefly for device to mark the descriptor used.
         let used_before = used_idx;
         for _ in 0..65536 {
-            let used_now = read_used_idx(tx);
+            let used_now = read_used_idx(&tx.used);
             if used_now != used_before {
                 break;
             }
             cpu_pause();
         }
 
-        let used_idx = read_used_idx(tx);
+        let used_idx = read_used_idx(&tx.used);
+        #[cfg(target_arch = "aarch64")]
         if tx.slot % 10 == 0 {
             uart::write_str("TX Progress: Handed off frame. Device Used Index = ");
             uart::write_u16(used_idx);
             uart::putc(b'\n');
         }
         Ok(())
+    }
+}
+
+impl NetRx for VirtioNet {
+    fn poll_rx<F>(&self, handler: F) -> Result<usize, DriverError>
+    where
+        F: FnMut(&[u8], usize),
+    {
+        let mut handler = handler;
+        poll_rx_inner(self, &mut handler)
     }
 }
 
@@ -509,5 +597,18 @@ impl<'a> sovereign_frame::Egress for VirtioEgress<'a> {
 
     fn transmit(&self, frame: &[u8; FRAME_LEN]) -> Result<(), Self::Error> {
         self.0.send_frame(frame)
+    }
+}
+
+/// Thin adapter exposing [`NetRx`] on the shared [`VirtioNet`] instance.
+pub struct VirtioIngress<'a>(pub &'a VirtioNet);
+
+impl<'a> VirtioIngress<'a> {
+    #[inline(always)]
+    pub fn poll<F>(&self, handler: F) -> Result<usize, DriverError>
+    where
+        F: FnMut(&[u8], usize),
+    {
+        self.0.poll_rx(handler)
     }
 }

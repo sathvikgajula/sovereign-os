@@ -9,7 +9,7 @@ pub mod timer;
 pub mod uart;
 pub mod virtio;
 
-pub use driver::{DriverError, NetTx, Timer};
+pub use driver::{DriverError, NetRx, NetTx, RX_FRAME_CAP, Timer};
 pub use sovereign_frame::{run_loop, Egress, FRAME_LEN, MetronomeTimer, PendingWrite, TickOutcome};
 pub use timer::TscTimer;
 pub use virtio::{VirtioEgress, VirtioNet};
