@@ -1,4 +1,4 @@
-/* x86_64 QEMU microvm PVH kernel — load @ 0x100000, DMA arena follows stack in low RAM. */
+/* x86_64 QEMU microvm PVH kernel — DMA arena then stack in low RAM. */
 ENTRY(_start)
 
 SECTIONS
@@ -33,15 +33,15 @@ SECTIONS
         *(.uninit_pool)
     }
 
-    . = ALIGN(16);
-    __stack_bottom = .;
-    . += 0x10000;
-    __stack_top = .;
-
     .dma_arena (NOLOAD) : ALIGN(4K) {
         __dma_arena_start = .;
         *(.dma_arena)
         . = ALIGN(4096);
         __dma_arena_end = .;
     }
+
+    . = ALIGN(16);
+    __stack_bottom = .;
+    . += 0x80000;
+    __stack_top = .;
 }

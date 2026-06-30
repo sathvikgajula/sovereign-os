@@ -4,6 +4,9 @@
 pub mod aarch64;
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub mod idt_x86_64;
+
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub mod x86_64;
 
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]

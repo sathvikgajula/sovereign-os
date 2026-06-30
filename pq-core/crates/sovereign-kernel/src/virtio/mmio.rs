@@ -19,15 +19,21 @@ pub const QEMU_VIRTIO_MMIO_STRIDE: usize = 0x200;
 #[cfg(target_arch = "aarch64")]
 pub const QEMU_VIRTIO_MMIO_SLOTS: usize = 32;
 
-/// microvm / legacy mmio virtio bases probed in order on x86_64 hosts.
+/// QEMU `microvm` virtio-mmio bus (`hw/i386/microvm.h`).
 #[cfg(target_arch = "x86_64")]
-pub const QEMU_VIRTIO_MMIO_BASE: usize = 0xfe00_0000;
+pub const QEMU_VIRTIO_MMIO_BASE: usize = 0xfeb0_0000;
 
 #[cfg(target_arch = "x86_64")]
-pub const QEMU_VIRTIO_MMIO_FALLBACKS: &[usize] = &[0xfe00_0000, 0xd000_0000];
+pub const QEMU_VIRTIO_MMIO_STRIDE: usize = 0x200;
 
-const MAGIC: u32 = 0x7472_6976; // "virt"
-const DEVICE_NET: u32 = 1;
+/// QEMU 11 microvm: `-device virtio-net` lands on slot 23 (0xfeb02e00).
+#[cfg(target_arch = "x86_64")]
+pub const QEMU_VIRTIO_NET_SLOT: usize = 23;
+
+pub const VIRTIO_MAGIC: u32 = 0x7472_6976; // "virt"
+pub const VIRTIO_DEVICE_NET: u32 = 1;
+const MAGIC: u32 = VIRTIO_MAGIC;
+const DEVICE_NET: u32 = VIRTIO_DEVICE_NET;
 
 /// VirtIO MMIO register offsets (virtio-v1.1 §4.2.2).
 #[repr(u32)]
@@ -128,24 +134,35 @@ impl VirtioMmio {
         Ok(())
     }
 
-    /// Legacy reset + feature pass-through (x86_64 / fallback).
+    /// Legacy reset + feature pass-through (x86_64 microvm — no FEATURES_OK).
     pub unsafe fn begin_legacy(&self) -> Result<(), ()> {
-        if self.read32(MmioReg::Magic) != MAGIC {
+        if !self.is_net_device() {
             return Err(());
         }
 
         self.write32(MmioReg::Status, 0);
-        let mut status = STATUS_ACK | STATUS_DRIVER;
-        self.write32(MmioReg::Status, status);
+        mmio_fence();
+        self.write32(MmioReg::Status, STATUS_ACK);
+        self.write32(MmioReg::Status, STATUS_ACK | STATUS_DRIVER);
 
         self.write32(MmioReg::DeviceFeaturesSel, 0);
-        let features = self.read32(MmioReg::DeviceFeatures);
+        let features0 = self.read32(MmioReg::DeviceFeatures);
         self.write32(MmioReg::DriverFeaturesSel, 0);
-        self.write32(MmioReg::DriverFeatures, features);
+        let driver0 = features0 & VIRTIO_NET_F_MAC;
+        self.write32(MmioReg::DriverFeatures, driver0);
+        mmio_fence();
+        Ok(())
+    }
 
-        status |= STATUS_FEATURES_OK;
-        self.write32(MmioReg::Status, status);
-        self.verify_features_ok()
+    /// Set `DRIVER_OK` without requiring `FEATURES_OK` (legacy virtio 0.9 / microvm).
+    pub unsafe fn driver_ok_legacy(&self) -> Result<(), ()> {
+        let status = self.read32(MmioReg::Status);
+        if (status & STATUS_FAILED) != 0 {
+            return Err(());
+        }
+        self.write32(MmioReg::Status, status | STATUS_DRIVER_OK);
+        mmio_fence();
+        Ok(())
     }
 
     /// True when this MMIO slot exposes a virtio-net device.

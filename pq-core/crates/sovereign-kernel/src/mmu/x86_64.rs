@@ -1,7 +1,5 @@
 //! x86_64 long-mode identity map: WB RAM, UC DMA arena, UC MMIO (2 MiB huge pages).
 
-use core::sync::atomic::{compiler_fence, Ordering};
-
 use crate::dma::dma_arena_base;
 
 const PTE_PRESENT: u64 = 1 << 0;
@@ -13,7 +11,7 @@ const PTE_UC: u64 = PTE_PWT | PTE_PCD;
 const PTE_WB: u64 = 0;
 
 const MAP_2M: u64 = 1 << 21;
-const MMIO_LO: u64 = 0xfe00_0000;
+const MMIO_LO: u64 = 0xfeb0_0000;
 
 #[repr(C, align(4096))]
 struct PageTable {
@@ -95,37 +93,23 @@ unsafe fn map_2m(va: u64, attr: u64) {
 
 #[inline(never)]
 pub unsafe fn enable_mmu() {
-    let mut cr0: u64;
-    core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nostack, preserves_flags));
     let cr3 = core::ptr::addr_of!(PML4) as u64;
-    let mut cr4: u64;
-    core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags));
-    cr4 |= 1 << 5; // PAE
-    cr0 |= 1 << 31; // PG
     core::arch::asm!(
-        "mov cr4, {cr4}",
         "mov cr3, {cr3}",
-        "mov cr0, {cr0}",
-        "jmp 2f",
-        "2:",
-        cr4 = in(reg) cr4,
         cr3 = in(reg) cr3,
-        cr0 = in(reg) cr0,
         options(nostack, preserves_flags),
     );
     MMU_LIVE = true;
 }
 
-/// Mark MMU path active for virtio DMA fences (identity map — no CR0.PG on PVH).
-pub fn set_live() {
+pub unsafe fn boot_mmu() {
+    build_tables();
+    enable_mmu();
+    set_live();
+}
+
+fn set_live() {
     unsafe {
         MMU_LIVE = true;
     }
-}
-
-pub unsafe fn boot_mmu() {
-    // QEMU microvm PVH leaves paging disabled with a flat physical map for low RAM.
-    // Custom 2 MiB tables + CR0.PG enable fault in this environment; virtio/DMA at
-    // 0x200000 and MMIO at 0xfe000000 are reachable without enabling our page tables.
-    set_live();
 }

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 
@@ -13,29 +14,43 @@ mkdir -p /tmp/antigravity
 rm -f "$CONSOLE_LOG"
 
 HOST_ARCH="$(uname -m)"
-case "$HOST_ARCH" in
-    arm64|aarch64)
-        TARGET="${TARGET:-aarch64-unknown-none}"
-        QEMU_BIN="${QEMU_BIN:-qemu-system-aarch64}"
-        QEMU_MACHINE="${QEMU_MACHINE:-virt,iommu=none}"
-        QEMU_CPU="${QEMU_CPU:-max}"
-        QEMU_NETDEV_DEVICE="${QEMU_NETDEV_DEVICE:-virtio-net-device,netdev=net0,iommu_platform=off}"
-        ;;
-    x86_64|amd64)
+case "${TARGET:-}" in
+    x86_64-*)
         TARGET="${TARGET:-x86_64-unknown-none}"
         QEMU_BIN="${QEMU_BIN:-qemu-system-x86_64}"
         QEMU_MACHINE="${QEMU_MACHINE:-microvm}"
         QEMU_CPU="${QEMU_CPU:-max}"
         QEMU_NETDEV_DEVICE="${QEMU_NETDEV_DEVICE:-virtio-net-device,netdev=net0}"
         ;;
+    aarch64-*|"" )
+        case "$HOST_ARCH" in
+            arm64|aarch64)
+                TARGET="${TARGET:-aarch64-unknown-none}"
+                QEMU_BIN="${QEMU_BIN:-qemu-system-aarch64}"
+                QEMU_MACHINE="${QEMU_MACHINE:-virt,iommu=none}"
+                QEMU_CPU="${QEMU_CPU:-max}"
+                QEMU_NETDEV_DEVICE="${QEMU_NETDEV_DEVICE:-virtio-net-device,netdev=net0,iommu_platform=off}"
+                ;;
+            x86_64|amd64)
+                TARGET="${TARGET:-x86_64-unknown-none}"
+                QEMU_BIN="${QEMU_BIN:-qemu-system-x86_64}"
+                QEMU_MACHINE="${QEMU_MACHINE:-microvm}"
+                QEMU_CPU="${QEMU_CPU:-max}"
+                QEMU_NETDEV_DEVICE="${QEMU_NETDEV_DEVICE:-virtio-net-device,netdev=net0}"
+                ;;
+            *)
+                echo "[!] Unsupported host: $HOST_ARCH"
+                exit 1
+                ;;
+        esac
+        ;;
     *)
-        echo "[!] Unsupported host: $HOST_ARCH"
+        echo "[!] Unsupported TARGET: $TARGET"
         exit 1
         ;;
 esac
 
 KERNEL_BIN="target/${TARGET}/release/sovereign-kernel"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "[*] Building sovereign-kernel (${TARGET})..."
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/target}"
