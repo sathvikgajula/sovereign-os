@@ -1,11 +1,27 @@
-//! Fixed non-cacheable DMA arena for virtio virtqueues (aarch64 MMU-backed).
+//! Fixed non-cacheable DMA arena for virtio virtqueues (MMU-backed).
 
 use core::cell::UnsafeCell;
 
 use crate::virtio::queue::{RxVirtqueue, TxVirtqueue};
 
-/// Physical base of the virtio DMA arena (must match `linker-aarch64.ld`).
+/// Physical base of the virtio DMA arena (must match linker script).
+#[cfg(target_arch = "aarch64")]
 pub const DMA_ARENA_BASE: usize = 0x4800_0000;
+
+#[inline(always)]
+pub fn dma_arena_base() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        DMA_ARENA_BASE
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe extern "C" {
+            static __dma_arena_start: u8;
+        }
+        core::ptr::addr_of!(__dma_arena_start) as usize
+    }
+}
 /// Arena size — one 2 MiB NC mapping covers this region.
 pub const DMA_ARENA_SIZE: usize = 1 << 20;
 
@@ -34,9 +50,10 @@ static mut VIRTIO_DMA: VirtioDmaLayout = VirtioDmaLayout::new();
 /// True when `addr..addr+len` lies entirely inside the DMA arena.
 #[inline(always)]
 pub fn range_in_arena(start: usize, end: usize) -> bool {
+    let base = dma_arena_base();
     end > start
-        && start >= DMA_ARENA_BASE
-        && end <= DMA_ARENA_BASE + DMA_ARENA_SIZE
+        && start >= base
+        && end <= base + DMA_ARENA_SIZE
 }
 
 /// RX virtqueue in the DMA arena (identity-mapped PA == VA after MMU init).

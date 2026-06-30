@@ -1,4 +1,4 @@
-/* x86_64 QEMU PC-class kernel layout (q35 / microvm PVH) */
+/* x86_64 QEMU microvm PVH kernel — load @ 0x100000, DMA arena follows stack in low RAM. */
 ENTRY(_start)
 
 SECTIONS
@@ -6,9 +6,12 @@ SECTIONS
     . = 0x100000;
 
     .text : ALIGN(4K) {
-        KEEP(*(.text.boot))
-        KEEP(*(.note.pvh))
+        KEEP(*(.text._start))
         *(.text .text.*)
+    }
+
+    .note.pvh : {
+        KEEP(*(.note.pvh))
     }
 
     .rodata : ALIGN(4K) {
@@ -32,6 +35,13 @@ SECTIONS
 
     . = ALIGN(16);
     __stack_bottom = .;
-    . += 0x40000;
+    . += 0x10000;
     __stack_top = .;
+
+    .dma_arena (NOLOAD) : ALIGN(4K) {
+        __dma_arena_start = .;
+        *(.dma_arena)
+        . = ALIGN(4096);
+        __dma_arena_end = .;
+    }
 }

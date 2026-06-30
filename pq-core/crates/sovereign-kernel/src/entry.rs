@@ -9,7 +9,6 @@ use sovereign_frame::{Egress, FRAME_LEN, MetronomeTimer};
 use sovereign_hal::arch::cpu_pause;
 
 use crate::timer::TscTimer;
-#[cfg(target_arch = "aarch64")]
 use crate::uart;
 use crate::virtio::{VirtioEgress, VirtioIngress, VirtioNet};
 
@@ -48,6 +47,26 @@ fn clear_bss() {
     }
 }
 
+#[cfg(target_os = "none")]
+unsafe fn init_mmu_and_dma() {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::mmu::aarch64::build_tables();
+        crate::mmu::aarch64::enable_mmu();
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::mmu::x86_64::boot_mmu();
+    }
+    uart::write_str("mmu-on\n");
+    #[cfg(target_arch = "aarch64")]
+    crate::dma::init_virtio_queues();
+    #[cfg(target_arch = "aarch64")]
+    uart::write_str("MMU+DMA arena NC @0x4800\n");
+    #[cfg(target_arch = "x86_64")]
+    uart::write_str("MMU+DMA arena @low\n");
+}
+
 /// Static heartbeat payload — avoids large stack frames in the metronome loop.
 #[cfg(target_os = "none")]
 static mut HEARTBEAT_FRAME: [u8; FRAME_LEN] = [0u8; FRAME_LEN];
@@ -55,25 +74,19 @@ static mut HEARTBEAT_FRAME: [u8; FRAME_LEN] = [0u8; FRAME_LEN];
 /// Core boot sequence — called from bin `start_rust` / x86 `bare_start`.
 #[cfg(target_os = "none")]
 pub extern "C" fn kernel_main() -> ! {
-    #[cfg(target_arch = "aarch64")]
     uart::init();
-
+    #[cfg(target_arch = "aarch64")]
     clear_bss();
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     unsafe {
-        crate::mmu::aarch64::build_tables();
-        crate::mmu::aarch64::enable_mmu();
-        uart::write_str("mmu-on\n");
-        crate::dma::init_virtio_queues();
-        uart::write_str("MMU+DMA arena NC @0x4800\n");
+        init_mmu_and_dma();
     }
 
     static mut NET: Option<VirtioNet> = None;
     unsafe {
         NET = Some(VirtioNet::empty());
         if VirtioNet::probe_into(NET.as_mut().unwrap()).is_err() {
-            #[cfg(target_arch = "aarch64")]
             uart::write_str("VirtIO probe failed\n");
             loop {
                 cpu_pause();
@@ -86,7 +99,7 @@ pub extern "C" fn kernel_main() -> ! {
     let timer = TscTimer::calibrate();
     let net: &'static VirtioNet = unsafe { NET.as_ref().unwrap() };
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     unsafe {
         crate::net::init_stack(net);
         #[cfg(feature = "rx-lab")]
@@ -107,7 +120,6 @@ pub extern "C" fn kernel_main() -> ! {
     {
         let _ = ingress.poll(|_data, len| {
             RX_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-            #[cfg(target_arch = "aarch64")]
             uart::log_rx_frame(len);
         });
     }
@@ -115,19 +127,12 @@ pub extern "C" fn kernel_main() -> ! {
     let mut epoch: u64 = 0;
     let mut last_rx_used: u16 = 0;
     loop {
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
         unsafe {
             crate::net::poll_stack(&timer);
         }
 
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            let _ = ingress.poll(|_data, _len| {
-                RX_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-            });
-        }
-
-        #[cfg(all(target_arch = "aarch64", feature = "rx-lab"))]
+        #[cfg(all(feature = "rx-lab", any(target_arch = "aarch64", target_arch = "x86_64")))]
         {
             let used = net.rx_used_idx();
             if used != last_rx_used {

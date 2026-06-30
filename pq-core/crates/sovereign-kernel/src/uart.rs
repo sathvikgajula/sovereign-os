@@ -1,4 +1,4 @@
-//! PL011 UART @ 0x0900_0000 on QEMU `virt` — optional bare-metal debug output.
+//! Serial debug output — PL011 (aarch64 virt) / COM1 8250 (x86_64 microvm).
 
 #[cfg(target_arch = "aarch64")]
 const UART0_BASE: usize = 0x0900_0000;
@@ -12,16 +12,37 @@ const UART_FR: usize = UART0_BASE + 0x18;
 #[cfg(target_arch = "aarch64")]
 const UART_CR: usize = UART0_BASE + 0x30;
 
-/// Enable PL011 TX/RX (QEMU rejects writes to DR when UARTEN is clear).
-#[cfg(target_arch = "aarch64")]
+#[cfg(target_arch = "x86_64")]
+const COM1_DATA: u16 = 0x3f8;
+
+#[cfg(target_arch = "x86_64")]
+const COM1_LSR: u16 = 0x3fd;
+
+/// Enable UART TX (architecture-specific).
 pub fn init() {
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::ptr::write_volatile(UART_CR as *mut u32, 0x301);
     }
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        // COM1 TX works without full 8250 programming on QEMU microvm.
+    }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
-pub fn init() {}
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn x86_outb(port: u16, val: u8) {
+    core::arch::asm!("out dx, al", in("dx") port, in("al") val, options(nostack, preserves_flags));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn x86_inb(port: u16) -> u8 {
+    let val: u8;
+    core::arch::asm!("in al, dx", out("al") val, in("dx") port, options(nostack, preserves_flags));
+    val
+}
 
 #[inline(always)]
 pub fn putc(byte: u8) {
@@ -30,8 +51,11 @@ pub fn putc(byte: u8) {
         while core::ptr::read_volatile(UART_FR as *const u32) & (1 << 5) != 0 {}
         core::ptr::write_volatile(UART_DR as *mut u32, byte as u32);
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    let _ = byte;
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        while x86_inb(COM1_LSR) & 0x20 == 0 {}
+        x86_outb(COM1_DATA, byte);
+    }
 }
 
 #[inline(always)]
@@ -49,7 +73,7 @@ pub fn write_u8_hex(b: u8) {
     putc(HEX[(b & 0x0f) as usize]);
 }
 
-/// Decimal print for `u16` — zero heap (PL011 metrics).
+/// Decimal print for `u16` — zero heap.
 #[inline(always)]
 pub fn write_u16(mut n: u16) {
     if n == 0 {
@@ -69,7 +93,7 @@ pub fn write_u16(mut n: u16) {
     }
 }
 
-/// One-shot metronome egress trace (PL011).
+/// One-shot metronome egress trace.
 #[inline(always)]
 pub fn log_tx_notify_slot31() {
     write_str("TX Notify Slot 31\n");

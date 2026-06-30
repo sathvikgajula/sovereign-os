@@ -6,6 +6,19 @@
 #[cfg(target_os = "none")]
 use sovereign_kernel::entry;
 
+/// Xen PVH note in the bin crate — must live in `.note.pvh` / PT_NOTE for QEMU microvm.
+#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+core::arch::global_asm!(
+    ".section .note.pvh, \"a\"",
+    ".balign 4",
+    ".long 4",
+    ".long 4",
+    ".long 0x12",
+    ".ascii \"Xen\\0\"",
+    ".balign 4",
+    ".long 0x100000",
+);
+
 /// Rust handoff from naked `_start` (resolves `kernel_main` from the lib crate).
 #[cfg(target_os = "none")]
 #[no_mangle]
@@ -28,15 +41,25 @@ pub extern "C" fn _start() -> ! {
 }
 
 #[cfg(all(target_os = "none", target_arch = "x86_64"))]
+#[unsafe(naked)]
 #[no_mangle]
+#[link_section = ".text._start"]
 pub extern "C" fn _start() -> ! {
-    entry::bare_start()
+    core::arch::naked_asm!(
+        "mov rax, OFFSET __stack_top",
+        "mov rsp, rax",
+        "and rsp, -16",
+        "call {start}",
+        "1:",
+        "hlt",
+        "jmp 1b",
+        start = sym start_rust,
+    );
 }
 
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    #[cfg(target_arch = "aarch64")]
     sovereign_kernel::uart::write_str("panic\n");
     loop {
         core::hint::spin_loop();

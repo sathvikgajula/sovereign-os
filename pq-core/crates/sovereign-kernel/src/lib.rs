@@ -6,9 +6,8 @@ pub mod boot;
 pub mod dma;
 pub mod driver;
 pub mod entry;
-#[cfg(target_arch = "aarch64")]
 pub mod mmu;
-#[cfg(target_arch = "aarch64")]
+#[cfg(target_os = "none")]
 pub mod net;
 pub mod timer;
 pub mod uart;
