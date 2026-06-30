@@ -36,6 +36,8 @@ pub extern "C" fn _start() -> ! {
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
+    #[cfg(target_arch = "aarch64")]
+    sovereign_kernel::uart::write_str("panic\n");
     loop {
         core::hint::spin_loop();
     }

@@ -8,6 +8,8 @@ pub mod driver;
 pub mod entry;
 #[cfg(target_arch = "aarch64")]
 pub mod mmu;
+#[cfg(target_arch = "aarch64")]
+pub mod net;
 pub mod timer;
 pub mod uart;
 pub mod virtio;

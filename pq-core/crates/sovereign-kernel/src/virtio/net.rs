@@ -306,6 +306,69 @@ impl VirtioNet {
         read_used_idx(&rx.used)
     }
 
+    /// VirtIO-probed MAC address (Ethernet source for TX).
+    pub fn eth_mac(&self) -> [u8; 6] {
+        self.eth_src
+    }
+
+    /// Transmit a raw Ethernet II frame (smoltcp path). Prepends virtio-net header.
+    pub fn send_eth_frame(&self, eth: &[u8]) -> Result<(), DriverError> {
+        if !self.ready || self.tx_depth == 0 || eth.is_empty() || eth.len() > 1514 {
+            return Err(if eth.len() > 1514 {
+                DriverError::TransmitBusy
+            } else {
+                DriverError::DeviceNotReady
+            });
+        }
+
+        let total = VirtioNetHeader::LEN + eth.len();
+        let depth = self.tx_depth;
+        let ring_mask = self.tx_ring_mask;
+        let tx = unsafe { &mut *self.tx.get() };
+        wait_tx_ring_slot(tx, depth);
+
+        let idx = tx.slot & ring_mask;
+        tx.slot = (tx.slot + 1) & ring_mask;
+
+        let buf = &mut tx.buffers[idx];
+        let mut vhdr = [0u8; VirtioNetHeader::LEN];
+        VirtioNetHeader::zeroed().write_to(&mut vhdr);
+        buf[..VirtioNetHeader::LEN].copy_from_slice(&vhdr);
+        buf[VirtioNetHeader::LEN..VirtioNetHeader::LEN + eth.len()].copy_from_slice(eth);
+
+        let buf_addr = buf.as_ptr() as u64;
+        tx.desc[idx] = super::queue::VirtqDesc {
+            addr: buf_addr,
+            len: total as u32,
+            flags: 0,
+            next: 0,
+        };
+        dma_write_sync(buf_addr as usize, buf_addr as usize + total);
+
+        tx.avail.flags = 0;
+        let head = tx.avail.idx;
+        let ring_pos = (head as usize) & ring_mask;
+        tx.avail.ring[ring_pos] = idx as u16;
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
+        tx.avail.idx = head.wrapping_add(1);
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+
+        let desc_start = core::ptr::addr_of!(tx.desc[idx]) as usize;
+        let desc_end = desc_start + core::mem::size_of::<super::queue::VirtqDesc>();
+        dma_write_sync(desc_start, desc_end);
+        let avail_start = core::ptr::addr_of!(tx.avail) as usize;
+        let avail_end = avail_start + core::mem::size_of_val(&tx.avail);
+        dma_write_sync(avail_start, avail_end);
+
+        pre_notify_fence();
+        unsafe {
+            self.mmio.notify(TX_QUEUE_INDEX);
+            self.mmio.ack_interrupt();
+        }
+        post_notify_fence();
+        Ok(())
+    }
+
     /// Inject a synthetic used-ring entry to validate `poll_rx` without external traffic.
     pub unsafe fn inject_selftest_rx(&self) {
         if !self.ready || self.rx_depth == 0 {

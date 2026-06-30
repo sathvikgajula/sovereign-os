@@ -74,6 +74,16 @@ trap - EXIT
 echo "[*] Console log tail:"
 tail -25 "$CONSOLE_LOG" 2>/dev/null || true
 
+if grep -q 'UDP echo ok' "$CONSOLE_LOG" 2>/dev/null; then
+    echo "[+] smoltcp UDP echo OK"
+    exit 0
+fi
+
+if grep -q 'UDP rx len=' "$CONSOLE_LOG" 2>/dev/null; then
+    echo "[+] smoltcp UDP receive OK"
+    exit 0
+fi
+
 if grep -q 'RX frame len=' "$CONSOLE_LOG" 2>/dev/null; then
     RX_COUNT=$(grep -c 'RX frame len=' "$CONSOLE_LOG" || true)
     echo "[+] RX ingest OK — observed ${RX_COUNT} RX log line(s)"

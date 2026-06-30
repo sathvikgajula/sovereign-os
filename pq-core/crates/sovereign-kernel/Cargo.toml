@@ -13,6 +13,7 @@ name = "sovereign-kernel"
 path = "src/main.rs"
 
 [dependencies]
+smoltcp = { version = "0.12.0", default-features = false, features = ["medium-ethernet", "proto-ipv4", "socket-udp"] }
 sovereign-alloc = { path = "../sovereign-alloc", default-features = false, features = ["kernel-minimal"] }
 sovereign-frame = { path = "../sovereign-frame", default-features = false }
 sovereign-hal = { path = "../sovereign-hal", default-features = false }

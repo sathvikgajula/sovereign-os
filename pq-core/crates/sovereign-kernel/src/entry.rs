@@ -63,8 +63,10 @@ pub extern "C" fn kernel_main() -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
         crate::mmu::aarch64::build_tables();
+        crate::mmu::aarch64::enable_mmu();
+        uart::write_str("mmu-on\n");
         crate::dma::init_virtio_queues();
-        uart::write_str("DMA arena @0x4800; MMU tables built\n");
+        uart::write_str("MMU+DMA arena NC @0x4800\n");
     }
 
     static mut NET: Option<VirtioNet> = None;
@@ -82,7 +84,20 @@ pub extern "C" fn kernel_main() -> ! {
     }
 
     let timer = TscTimer::calibrate();
-    let net = unsafe { NET.as_ref().unwrap() };
+    let net: &'static VirtioNet = unsafe { NET.as_ref().unwrap() };
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        crate::net::init_stack(net);
+        #[cfg(feature = "rx-lab")]
+        {
+            crate::net::inject_udp_selftest();
+            for _ in 0..4 {
+                crate::net::poll_stack(&timer);
+            }
+        }
+    }
+
     let egress = VirtioEgress(net);
     let ingress = VirtioIngress(net);
 
@@ -98,35 +113,34 @@ pub extern "C" fn kernel_main() -> ! {
     }
 
     let mut epoch: u64 = 0;
-        let mut rx_log_budget: u16 = 8;
-        let mut last_rx_used: u16 = 0;
-        loop {
-            let _ = ingress.poll(|_data, len| {
-                RX_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-                #[cfg(target_arch = "aarch64")]
-                if rx_log_budget > 0 {
-                    uart::log_rx_frame(len);
-                    rx_log_budget -= 1;
-                }
-            });
+    let mut last_rx_used: u16 = 0;
+    loop {
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            crate::net::poll_stack(&timer);
+        }
 
-            #[cfg(target_arch = "aarch64")]
-            {
-                let used = net.rx_used_idx();
-                if used != last_rx_used {
-                    uart::write_str("RX used idx=");
-                    uart::write_u16(used);
-                    uart::putc(b'\n');
-                    last_rx_used = used;
-                }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = ingress.poll(|_data, _len| {
+                RX_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+
+        #[cfg(all(target_arch = "aarch64", feature = "rx-lab"))]
+        {
+            let used = net.rx_used_idx();
+            if used != last_rx_used {
+                uart::write_str("RX used idx=");
+                uart::write_u16(used);
+                uart::putc(b'\n');
+                last_rx_used = used;
             }
+        }
 
         unsafe {
             HEARTBEAT_FRAME[..8].copy_from_slice(&epoch.to_le_bytes());
-            match egress.transmit(unsafe { &*core::ptr::addr_of!(HEARTBEAT_FRAME) }) {
-                Ok(()) => {}
-                Err(_) => {}
-            }
+            let _ = egress.transmit(&*core::ptr::addr_of!(HEARTBEAT_FRAME));
         }
         epoch = epoch.wrapping_add(1);
         let deadline = timer.monotonic_ns().wrapping_add(200_000_000);
