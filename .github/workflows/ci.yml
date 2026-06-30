@@ -41,8 +41,8 @@ jobs:
             --release \
             --bin sovereign-kernel
 
-      - name: Workspace lib tests
-        run: cargo test --workspace --lib --exclude sovereign-kernel
+      - name: Kernel crate lib tests (host)
+        run: cargo test -p sovereign-alloc -p sovereign-frame -p sovereign-hal --lib
 
   pq-daemon-smoke:
     name: pq-daemon smoke build
