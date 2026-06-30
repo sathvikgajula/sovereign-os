@@ -16,6 +16,8 @@ use crate::virtio::{VirtioEgress, VirtioIngress, VirtioNet};
 #[cfg(target_os = "none")]
 static RX_FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
 
+static mut NET: Option<VirtioNet> = None;
+
 /// x86_64 stack setup — called from bin `_start`.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub fn bare_start() -> ! {
@@ -71,43 +73,45 @@ unsafe fn init_mmu_and_dma() {
 #[cfg(target_os = "none")]
 static mut HEARTBEAT_FRAME: [u8; FRAME_LEN] = [0u8; FRAME_LEN];
 
-/// Core boot sequence — called from bin `start_rust` / x86 `bare_start`.
+/// Post-virtio boot: smoltcp, metronome, RX lab (x86 tail-call from queue setup).
 #[cfg(target_os = "none")]
-pub extern "C" fn kernel_main() -> ! {
-    uart::init();
-    #[cfg(target_arch = "aarch64")]
-    clear_bss();
-
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    unsafe {
-        init_mmu_and_dma();
-    }
-
-    static mut NET: Option<VirtioNet> = None;
-    unsafe {
-        NET = Some(VirtioNet::empty());
-        if VirtioNet::probe_into(NET.as_mut().unwrap()).is_err() {
-            uart::write_str("VirtIO probe failed\n");
-            loop {
-                cpu_pause();
-            }
-        }
-        #[cfg(feature = "rx-lab")]
-        NET.as_ref().unwrap().inject_selftest_rx();
-    }
-
+pub(crate) unsafe fn run_after_virtio() -> ! {
+    let net: &'static VirtioNet = NET.as_ref().unwrap();
     let timer = TscTimer::calibrate();
-    let net: &'static VirtioNet = unsafe { NET.as_ref().unwrap() };
 
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    unsafe {
-        crate::net::init_stack(net);
-        #[cfg(feature = "rx-lab")]
-        {
-            crate::net::inject_udp_selftest();
-            for _ in 0..4 {
-                crate::net::poll_stack(&timer);
+    #[cfg(all(feature = "rx-lab", target_arch = "x86_64"))]
+    {
+        net.inject_selftest_rx();
+        let ingress = VirtioIngress(net);
+        let _ = ingress.poll(|_data, len| {
+            RX_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+            uart::log_rx_frame(len);
+        });
+        let mut last_rx_used = net.rx_used_idx();
+        loop {
+            let _ = ingress.poll(|_data, len| {
+                RX_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+                uart::log_rx_frame(len);
+            });
+            let used = net.rx_used_idx();
+            if used != last_rx_used {
+                uart::write_str("RX used idx=");
+                uart::write_u16(used);
+                uart::putc(b'\n');
+                last_rx_used = used;
             }
+            let deadline = timer.monotonic_ns().wrapping_add(50_000_000);
+            timer.sleep_until(deadline);
+        }
+    }
+
+    crate::net::init_stack(net);
+
+    #[cfg(feature = "rx-lab")]
+    {
+        crate::net::inject_udp_selftest();
+        for _ in 0..8 {
+            crate::net::poll_stack(&timer);
         }
     }
 
@@ -127,13 +131,14 @@ pub extern "C" fn kernel_main() -> ! {
     let mut epoch: u64 = 0;
     let mut last_rx_used: u16 = 0;
     loop {
-        #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-        unsafe {
-            crate::net::poll_stack(&timer);
-        }
+        crate::net::poll_stack(&timer);
 
-        #[cfg(all(feature = "rx-lab", any(target_arch = "aarch64", target_arch = "x86_64")))]
+        #[cfg(feature = "rx-lab")]
         {
+            let _ = ingress.poll(|_data, len| {
+                RX_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+                uart::log_rx_frame(len);
+            });
             let used = net.rx_used_idx();
             if used != last_rx_used {
                 uart::write_str("RX used idx=");
@@ -143,12 +148,42 @@ pub extern "C" fn kernel_main() -> ! {
             }
         }
 
-        unsafe {
-            HEARTBEAT_FRAME[..8].copy_from_slice(&epoch.to_le_bytes());
-            let _ = egress.transmit(&*core::ptr::addr_of!(HEARTBEAT_FRAME));
-        }
+        HEARTBEAT_FRAME[..8].copy_from_slice(&epoch.to_le_bytes());
+        let _ = egress.transmit(&*core::ptr::addr_of!(HEARTBEAT_FRAME));
         epoch = epoch.wrapping_add(1);
         let deadline = timer.monotonic_ns().wrapping_add(200_000_000);
         timer.sleep_until(deadline);
+    }
+}
+
+/// Core boot sequence — called from bin `start_rust` / x86 `bare_start`.
+#[cfg(target_os = "none")]
+pub extern "C" fn kernel_main() -> ! {
+    uart::init();
+    #[cfg(target_arch = "aarch64")]
+    clear_bss();
+
+    unsafe {
+        init_mmu_and_dma();
+    }
+
+    unsafe {
+        NET = Some(VirtioNet::empty());
+        if VirtioNet::probe_into(NET.as_mut().unwrap()).is_err() {
+            uart::write_str("VirtIO probe failed\n");
+            loop {
+                cpu_pause();
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            VirtioNet::finish_x86_queues(NET.as_mut().unwrap());
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            #[cfg(feature = "rx-lab")]
+            NET.as_ref().unwrap().inject_selftest_rx();
+            run_after_virtio();
+        }
     }
 }

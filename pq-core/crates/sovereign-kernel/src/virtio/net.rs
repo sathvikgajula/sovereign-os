@@ -5,7 +5,7 @@ use super::mmio::VirtioMmio;
 #[cfg(target_arch = "aarch64")]
 use super::mmio::{QEMU_VIRTIO_MMIO_BASE, QEMU_VIRTIO_MMIO_SLOTS, QEMU_VIRTIO_MMIO_STRIDE, QEMU_VIRTIO_NET_SLOT};
 #[cfg(target_arch = "x86_64")]
-use super::mmio::{QEMU_VIRTIO_MMIO_BASE, QEMU_VIRTIO_MMIO_FALLBACKS};
+use super::mmio::{QEMU_VIRTIO_MMIO_BASE, QEMU_VIRTIO_MMIO_STRIDE, QEMU_VIRTIO_NET_SLOT};
 use super::queue::{RxVirtqueue, TxVirtqueue, RX_BUF_LEN};
 use crate::dma;
 use crate::driver::{DriverError, NetRx, NetTx};
@@ -128,6 +128,7 @@ impl VirtioNet {
     }
 
     /// Probe virtio-net and initialize `out` in place (virtqueues must live in `.bss`).
+    #[inline(never)]
     pub unsafe fn probe_into(out: &mut Self) -> Result<(), DriverError> {
         #[cfg(target_arch = "aarch64")]
         {
@@ -150,16 +151,125 @@ impl VirtioNet {
         }
         #[cfg(target_arch = "x86_64")]
         {
-            for &base in QEMU_VIRTIO_MMIO_FALLBACKS {
-                if Self::probe_modern(base, out).is_ok() {
-                    return Ok(());
+            let preferred = QEMU_VIRTIO_MMIO_BASE + QEMU_VIRTIO_NET_SLOT * QEMU_VIRTIO_MMIO_STRIDE;
+            let mut base = 0usize;
+            for _ in 0..256usize {
+                let probe23 = VirtioMmio::new(preferred);
+                if probe23.is_net_device() {
+                    base = preferred;
+                    break;
                 }
-                if Self::probe_legacy(base, out).is_ok() {
-                    return Ok(());
+                cpu_pause();
+            }
+            if base == 0 {
+                for slot in 0..32usize {
+                    let try_base = QEMU_VIRTIO_MMIO_BASE + slot * QEMU_VIRTIO_MMIO_STRIDE;
+                    let probe = VirtioMmio::new(try_base);
+                    if probe.is_net_device() {
+                        base = try_base;
+                        break;
+                    }
                 }
             }
-            Err(DriverError::DeviceNotReady)
+            if base == 0 {
+                uart::write_str("VirtIO net slot not found\n");
+                return Err(DriverError::DeviceNotReady);
+            }
+            let mmio = VirtioMmio::new(base);
+            mmio.begin_legacy()
+                .map_err(|_| DriverError::DeviceNotReady)?;
+
+            out.mmio = mmio;
+            Ok(())
         }
+    }
+
+    /// Legacy queue PFN setup — tail-calls [`crate::entry::run_after_virtio`].
+    #[cfg(target_arch = "x86_64")]
+    #[inline(never)]
+    pub unsafe fn finish_x86_queues(out: &mut Self) -> ! {
+        out.rx_depth = 0;
+        out.rx_ring_mask = 0;
+        out.tx_depth = 0;
+        out.tx_ring_mask = 0;
+        out.ready = false;
+        out.eth_src = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+
+        out.mmio.write32(super::mmio::MmioReg::QueueSel, RX_QUEUE_INDEX);
+        let rx_max = out.mmio.read32(super::mmio::MmioReg::QueueNumMax);
+        if rx_max == 0 {
+            uart::write_str("VirtIO queue setup failed\n");
+            loop {
+                cpu_pause();
+            }
+        }
+        let rx_num = QUEUE_DEPTH.min(rx_max as usize);
+        out.mmio.write32(super::mmio::MmioReg::QueueNum, rx_num as u32);
+        {
+            let rx = &mut *out.rx.get();
+            rx.avail.flags = 0;
+            rx.avail.idx = 0;
+            rx.last_used = 0;
+            for i in 0..rx_num {
+                rx.desc[i] = super::queue::VirtqDesc {
+                    addr: rx.buffers[i].as_ptr() as u64,
+                    len: RX_BUF_LEN as u32,
+                    flags: VIRTQ_DESC_F_WRITE,
+                    next: 0,
+                };
+                rx.avail.ring[i] = i as u16;
+            }
+            out.mmio.write_legacy_queue_pfn(rx.desc_phys());
+            out.rx_depth = rx_num;
+            out.rx_ring_mask = rx_num - 1;
+        }
+
+        out.mmio.write32(super::mmio::MmioReg::QueueSel, TX_QUEUE_INDEX);
+        let tx_max = out.mmio.read32(super::mmio::MmioReg::QueueNumMax);
+        if tx_max == 0 {
+            uart::write_str("VirtIO queue setup failed\n");
+            loop {
+                cpu_pause();
+            }
+        }
+        let tx_num = QUEUE_DEPTH.min(tx_max as usize);
+        out.mmio.write32(super::mmio::MmioReg::QueueNum, tx_num as u32);
+        {
+            let tx = &mut *out.tx.get();
+            tx.avail.flags = 0;
+            tx.avail.idx = 0;
+            tx.slot = 0;
+            out.mmio.write_legacy_queue_pfn(tx.desc_phys());
+            out.tx_depth = tx_num;
+            out.tx_ring_mask = tx_num - 1;
+        }
+
+        out.mmio
+            .driver_ok_legacy()
+            .map_err(|_| ())
+            .unwrap_or_else(|_| loop { cpu_pause(); });
+        {
+            let rx = &mut *out.rx.get();
+            rx.avail.idx = out.rx_depth as u16;
+        }
+        out.mmio.notify(RX_QUEUE_INDEX);
+        post_notify_fence();
+        out.mmio.ack_interrupt();
+        out.ready = true;
+        uart::write_str("VirtIO NET DRIVER_OK\n");
+        unsafe {
+            extern "C" {
+                static __stack_top: u8;
+            }
+            core::arch::asm!(
+                "xor rbp, rbp",
+                "mov rsp, {stack}",
+                "and rsp, -16",
+                stack = in(reg) core::ptr::addr_of!(__stack_top) as usize,
+                options(nostack, preserves_flags),
+            );
+        }
+        crate::entry::run_after_virtio();
     }
 
     /// VirtIO 1.0 modern handshake at `base`.
@@ -221,7 +331,7 @@ impl VirtioNet {
         out.setup_rx_queue()?;
         out.setup_tx_queue()?;
         out.mmio
-            .driver_ok()
+            .driver_ok_legacy()
             .map_err(|_| DriverError::DeviceNotReady)?;
         out.ready = true;
         Ok(())

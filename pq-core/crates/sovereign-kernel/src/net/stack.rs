@@ -42,7 +42,7 @@ pub unsafe fn init_stack(net: &'static VirtioNet) {
     iface.update_ip_addrs(|addrs| {
         let _ = addrs.push(IpCidr::new(IpAddress::Ipv4(GUEST_IP), GUEST_MASK));
     });
-    iface.routes_mut().add_default_ipv4_route(GATEWAY);
+    let _ = iface.routes_mut().add_default_ipv4_route(GATEWAY);
 
     let rx_meta = &mut *core::ptr::addr_of_mut!(RX_META);
     let tx_meta = &mut *core::ptr::addr_of_mut!(TX_META);
